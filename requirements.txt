@@ -1,0 +1,6 @@
+scipy
+reportlab
+streamlit-aggrid
+plotly
+openpyxl
+xlsxwriter
