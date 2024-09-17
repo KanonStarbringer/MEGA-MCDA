@@ -15,7 +15,7 @@ import plotly.express as px
 
 # Set the app title and description
 st.set_page_config(
-    page_title="PSI and MPSI-MARA calculator",
+    page_title="MEGA-MCDA",
     #page_icon=":chart_with_upwards_trend:",  # You can customize the icon
     #layout="wide",  # You can set the layout (wide or center)
     initial_sidebar_state="auto"  # You can set the initial sidebar state
@@ -856,11 +856,15 @@ def main():
         st.subheader("About")
         st.write("The PSI Method is a method created by Maniya et al. [2010]")
         st.write("The Hybrid MCDA Method MPSI-MARA is a method created by Gligoric et al. [2022]")
-        st.write("Both Articles")
+        st.write("The Hybrid MCDA method MPSI-ARLON is a method created by Kara et al. [2024]")
+        st.write("The LOPCOW-DOBI hybrid MCDA method is a method created by Ecer [2023]")
+        st.write("All Articles")
         st.write("https://www.sciencedirect.com/science/article/abs/pii/S0261306909006396?via%3Dihub")
         st.write('https://www.mdpi.com/2079-8954/10/6/248')
+        st.write("https://doi.org/10.1016/j.seps.2024.101822")
+        st.write("https://linkinghub.elsevier.com/retrieve/pii/S0305048322000974")
         st.write("To cite this work:")
-        st.write("Araujo, Tullio Mozart Pires de Castro; Gomes, Carlos Francisco Simões.; Santos, Marcos dos. PSI and MPSI-MARA For Decision Making (v1), Universidade Federal Fluminense, Niterói, Rio de Janeiro, 2023.")
+        st.write("Araujo, Tullio Mozart Pires de Castro; Gomes, Carlos Francisco Simões.; Santos, Marcos dos. MEGA-MCDA (v1), Universidade Federal Fluminense, Niterói, Rio de Janeiro, 2024.")
     
     # Add logo to the sidebar
     logo_path = "https://i.imgur.com/g7fITf4.png"  # Replace with the actual path to your logo image file
