@@ -55,7 +55,7 @@ def download_template():
     st.download_button(
         label="Download Excel template",
         data=excel_buffer,
-        file_name="MEREC_SPOTIS_template.xlsx",
+        file_name="MEGA-MCDA_template.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -633,17 +633,346 @@ def dobi_R_i(Z_L1_values, Z_L2_values, delta):
     
     return R_i_values
 
+def swara_normalize(matrix, criterion_types):
+    """
+    Normalize the decision matrix using SWARA method.
+    
+    Parameters:
+    - matrix: The decision matrix (alternatives x criteria)
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - Normalized matrix
+    """
+    normalized_matrix = matrix.copy()
+    
+    for j, criterion_type in enumerate(criterion_types):
+        if criterion_type == "Benefit":
+            col_max = matrix.iloc[:, j+1].max()
+            normalized_matrix.iloc[:, j+1] = matrix.iloc[:, j+1] / col_max
+        else:  # Cost criterion
+            col_min = matrix.iloc[:, j+1].min()
+            normalized_matrix.iloc[:, j+1] = col_min / matrix.iloc[:, j+1]
+    
+    return normalized_matrix
+
+def calculate_swara_weights(normalized_matrix):
+    """
+    Calculate weights using SWARA method.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    
+    Returns:
+    - Weights for each criterion
+    """
+    # Calculate the mean value for each criterion
+    mean_values = normalized_matrix.iloc[:, 1:].mean()
+    
+    # Calculate weights as the proportion of each mean to the total
+    total_mean = mean_values.sum()
+    weights = mean_values / total_mean
+    
+    return weights
+
+def moora_normalize(matrix):
+    """
+    Normalize the decision matrix using MOORA method.
+    
+    Parameters:
+    - matrix: The decision matrix
+    
+    Returns:
+    - Normalized matrix
+    """
+    normalized_matrix = matrix.copy()
+    
+    # Calculate the square root of the sum of squares for each criterion
+    for j in range(1, matrix.shape[1]):
+        sum_squares = np.sqrt(np.sum(matrix.iloc[:, j]**2))
+        normalized_matrix.iloc[:, j] = matrix.iloc[:, j] / sum_squares
+    
+    return normalized_matrix
+
+def calculate_moora_scores(normalized_matrix, weights, criterion_types):
+    """
+    Calculate MOORA scores for each alternative.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - MOORA scores for each alternative
+    """
+    scores = np.zeros(normalized_matrix.shape[0])
+    
+    for i in range(normalized_matrix.shape[0]):
+        for j, criterion_type in enumerate(criterion_types):
+            if criterion_type == "Benefit":
+                scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
+            else:  # Cost criterion
+                scores[i] -= weights[j] * normalized_matrix.iloc[i, j+1]
+    
+    return scores
+
+def calculate_3nag_scores(moora_scores, normalized_matrix, weights, criterion_types):
+    """
+    Calculate 3NAG scores for each alternative.
+    
+    Parameters:
+    - moora_scores: MOORA scores for each alternative
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - 3NAG scores for each alternative
+    """
+    scores = np.zeros(normalized_matrix.shape[0])
+    
+    for i in range(normalized_matrix.shape[0]):
+        for j, criterion_type in enumerate(criterion_types):
+            if criterion_type == "Benefit":
+                scores[i] += weights[j] * (normalized_matrix.iloc[i, j+1] - moora_scores[i])
+            else:  # Cost criterion
+                scores[i] += weights[j] * (moora_scores[i] - normalized_matrix.iloc[i, j+1])
+    
+    return scores
+
+def rank_alternatives(scores):
+    """
+    Rank alternatives based on their scores.
+    
+    Parameters:
+    - scores: Scores for each alternative
+    
+    Returns:
+    - DataFrame with alternatives and their rankings
+    """
+    rankings = pd.DataFrame({
+        'Alternative': [f'A{i+1}' for i in range(len(scores))],
+        'Score': scores
+    })
+    
+    # Sort by score in descending order
+    rankings = rankings.sort_values(by='Score', ascending=False).reset_index(drop=True)
+    
+    return rankings
+
+def critic_normalize(matrix, criterion_types):
+    """
+    Normalize the decision matrix using CRITIC method.
+    
+    Parameters:
+    - matrix: The decision matrix (alternatives x criteria)
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - Normalized matrix
+    """
+    normalized_matrix = matrix.copy()
+    
+    for j, criterion_type in enumerate(criterion_types):
+        if criterion_type == "Benefit":
+            col_min = matrix.iloc[:, j+1].min()
+            col_max = matrix.iloc[:, j+1].max()
+            normalized_matrix.iloc[:, j+1] = (matrix.iloc[:, j+1] - col_min) / (col_max - col_min)
+        else:  # Cost criterion
+            col_min = matrix.iloc[:, j+1].min()
+            col_max = matrix.iloc[:, j+1].max()
+            normalized_matrix.iloc[:, j+1] = (col_max - matrix.iloc[:, j+1]) / (col_max - col_min)
+    
+    return normalized_matrix
+
+def calculate_critic_weights(normalized_matrix):
+    """
+    Calculate weights using CRITIC method.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    
+    Returns:
+    - Weights for each criterion
+    """
+    # Calculate standard deviation for each criterion
+    std_dev = normalized_matrix.iloc[:, 1:].std()
+    
+    # Calculate correlation matrix
+    correlation_matrix = normalized_matrix.iloc[:, 1:].corr()
+    
+    # Calculate information measure for each criterion
+    info_measure = np.zeros(len(std_dev))
+    for j in range(len(std_dev)):
+        sum_correlation = np.sum(1 - correlation_matrix.iloc[j, :])
+        info_measure[j] = std_dev[j] * sum_correlation
+    
+    # Calculate weights
+    weights = info_measure / np.sum(info_measure)
+    
+    return weights
+
+def calculate_critic_moora_scores(normalized_matrix, weights, criterion_types):
+    """
+    Calculate MOORA scores for each alternative using CRITIC weights.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - MOORA scores for each alternative
+    """
+    scores = np.zeros(normalized_matrix.shape[0])
+    
+    for i in range(normalized_matrix.shape[0]):
+        for j, criterion_type in enumerate(criterion_types):
+            if criterion_type == "Benefit":
+                scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
+            else:  # Cost criterion
+                scores[i] -= weights[j] * normalized_matrix.iloc[i, j+1]
+    
+    return scores
+
+def calculate_3n_scores(moora_scores, normalized_matrix, weights, criterion_types):
+    """
+    Calculate 3N scores for each alternative.
+    
+    Parameters:
+    - moora_scores: MOORA scores for each alternative
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - 3N scores for each alternative
+    """
+    scores = np.zeros(normalized_matrix.shape[0])
+    
+    for i in range(normalized_matrix.shape[0]):
+        for j, criterion_type in enumerate(criterion_types):
+            if criterion_type == "Benefit":
+                scores[i] += weights[j] * (normalized_matrix.iloc[i, j+1] - moora_scores[i])
+            else:  # Cost criterion
+                scores[i] += weights[j] * (moora_scores[i] - normalized_matrix.iloc[i, j+1])
+    
+    return scores
+
+def calculate_critic_gra_3n_weights(normalized_matrix):
+    """
+    Calculate weights using CRITIC-GRA-3N method.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    
+    Returns:
+    - Weights for each criterion
+    """
+    # Calculate standard deviation for each criterion
+    std_dev = normalized_matrix.iloc[:, 1:].std()
+    
+    # Calculate correlation matrix
+    correlation_matrix = normalized_matrix.iloc[:, 1:].corr()
+    
+    # Calculate information measure for each criterion
+    info_measure = np.zeros(len(std_dev))
+    for j in range(len(std_dev)):
+        sum_correlation = np.sum(1 - correlation_matrix.iloc[j, :])
+        info_measure[j] = std_dev[j] * sum_correlation
+    
+    # Calculate weights
+    weights = info_measure / np.sum(info_measure)
+    
+    return weights
+
+def calculate_grey_coefficient(normalized_matrix, weights, criterion_types):
+    """
+    Calculate grey coefficients for each alternative using GRA method.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - Grey coefficients for each alternative
+    """
+    # Define reference sequence (ideal solution)
+    reference_sequence = np.zeros(normalized_matrix.shape[1] - 1)
+    for j, criterion_type in enumerate(criterion_types):
+        if criterion_type == "Benefit":
+            reference_sequence[j] = normalized_matrix.iloc[:, j+1].max()
+        else:  # Cost criterion
+            reference_sequence[j] = normalized_matrix.iloc[:, j+1].min()
+    
+    # Calculate grey coefficients
+    grey_coefficients = np.zeros(normalized_matrix.shape[0])
+    rho = 0.5  # Distinguishing coefficient
+    
+    for i in range(normalized_matrix.shape[0]):
+        sum_coefficient = 0
+        for j in range(len(criterion_types)):
+            # Calculate absolute difference
+            diff = abs(normalized_matrix.iloc[i, j+1] - reference_sequence[j])
+            # Calculate grey coefficient
+            min_diff = np.min(np.abs(normalized_matrix.iloc[:, j+1] - reference_sequence[j]))
+            max_diff = np.max(np.abs(normalized_matrix.iloc[:, j+1] - reference_sequence[j]))
+            grey_coefficient = (min_diff + rho * max_diff) / (diff + rho * max_diff)
+            # Weight and sum
+            sum_coefficient += weights[j] * grey_coefficient
+        grey_coefficients[i] = sum_coefficient
+    
+    return grey_coefficients
+
+def calculate_3n_grey_scores(grey_coefficients, normalized_matrix, weights, criterion_types):
+    """
+    Calculate 3N scores for each alternative using grey coefficients.
+    
+    Parameters:
+    - grey_coefficients: Grey coefficients for each alternative
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - 3N scores for each alternative
+    """
+    scores = np.zeros(normalized_matrix.shape[0])
+    
+    for i in range(normalized_matrix.shape[0]):
+        for j, criterion_type in enumerate(criterion_types):
+            if criterion_type == "Benefit":
+                scores[i] += weights[j] * (normalized_matrix.iloc[i, j+1] - grey_coefficients[i])
+            else:  # Cost criterion
+                scores[i] += weights[j] * (grey_coefficients[i] - normalized_matrix.iloc[i, j+1])
+    
+    return scores
+
 def main():
-    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "About"]
+    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "About"]
 
     choice = st.sidebar.selectbox("Menu", menu)
 
     if choice == "Home":
         st.header("Home")
-        st.subheader("Multicriteria Methods Calculator")
-        st.write("This is a MCDA Calculator for the PSI, MPSI-MARA, MPSI-ARLON and LOPCOW-DOBI Methods.")
-        st.write("To use this Calculator, define the number of alternatives and criteria you'll measure.")
-        st.write("Then, define if the criteria are of benefit (more is better) or cost (less is better).")
+        st.subheader("MEGA-MCDA: Multicriteria Decision Analysis Calculator")
+        st.write("Welcome to MEGA-MCDA, a comprehensive calculator for multiple Multicriteria Decision Analysis (MCDA) methods.")
+        st.write("This application includes the following methods:")
+        st.write("1. PSI (Preference Selection Index) - A method for ranking alternatives based on preference selection")
+        st.write("2. MPSI-MARA - A hybrid method combining MPSI with MARA for improved decision making")
+        st.write("3. MPSI-ARLON - A hybrid method combining MPSI with ARLON for enhanced decision analysis")
+        st.write("4. LOPCOW-DOBI - A hybrid method combining LOPCOW with DOBI for comprehensive decision evaluation")
+        st.write("5. SWARA-MOORA-3NAG - A hybrid method combining SWARA, MOORA, and 3NAG for advanced decision analysis")
+        st.write("6. CRITIC-MOORA-3N - A hybrid method combining CRITIC, MOORA, and 3N for objective decision analysis")
+        st.write("7. CRITIC-GRA-3N - A hybrid method combining CRITIC, GRA, and 3N for objective decision analysis")
+        st.write("To use this Calculator:")
+        st.write("1. Select the desired method from the sidebar menu")
+        st.write("2. Choose between manual input or uploading an Excel file")
+        st.write("3. Define your alternatives and criteria")
+        st.write("4. Specify whether each criterion is of benefit (more is better) or cost (less is better)")
+        st.write("5. Input your data and get the results")
 
     elif choice == "PSI":
         st.title("PSI Calculator")
@@ -852,17 +1181,171 @@ def main():
         st.subheader("Rankings (DOBI):")
         st.dataframe(rankings_dobi)
 
+    elif choice == "SWARA-MOORA-3NAG":
+        st.title("SWARA-MOORA-3NAG Method MCDA Calculator")
+        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
+
+        if data_source == "Upload Excel":
+            st.write("Download the template to fill out the data:")
+            download_template()
+            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+            if uploaded_file:
+                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
+                st.dataframe(payoff_matrix)
+        else:
+            payoff_matrix, criterion_types = get_payoff_matrix()
+
+        # Step 1: SWARA Normalization
+        normalized_matrix_swara = swara_normalize(payoff_matrix, criterion_types)
+        st.subheader("Normalized Matrix (SWARA):")
+        st.dataframe(normalized_matrix_swara)
+
+        # Step 2: Calculate SWARA Weights
+        weights_swara = calculate_swara_weights(normalized_matrix_swara)
+        st.subheader("Criterion Weights (SWARA):")
+        st.dataframe(pd.DataFrame(weights_swara).transpose())
+
+        # Step 3: MOORA Normalization
+        normalized_matrix_moora = moora_normalize(payoff_matrix)
+        st.subheader("Normalized Matrix (MOORA):")
+        st.dataframe(normalized_matrix_moora)
+
+        # Step 4: Calculate MOORA Scores
+        moora_scores = calculate_moora_scores(normalized_matrix_moora, weights_swara, criterion_types)
+        st.subheader("MOORA Scores:")
+        st.dataframe(pd.DataFrame(moora_scores, columns=['MOORA Score']))
+
+        # Step 5: Calculate 3NAG Scores
+        nag_scores = calculate_3nag_scores(moora_scores, normalized_matrix_moora, weights_swara, criterion_types)
+        st.subheader("3NAG Scores:")
+        st.dataframe(pd.DataFrame(nag_scores, columns=['3NAG Score']))
+
+        # Step 6: Final Rankings
+        final_rankings = rank_alternatives(nag_scores)
+        st.subheader("Final Rankings:")
+        st.dataframe(final_rankings)
+
+        # Plot the rankings
+        fig = px.bar(
+            final_rankings,
+            x='Alternative',
+            y='Score',
+            title='Final Rankings of Alternatives',
+            labels={'Score': '3NAG Score'}
+        )
+        fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3NAG Score')
+        st.plotly_chart(fig)
+
+    elif choice == "CRITIC-MOORA-3N":
+        st.title("CRITIC-MOORA-3N Method MCDA Calculator")
+        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
+
+        if data_source == "Upload Excel":
+            st.write("Download the template to fill out the data:")
+            download_template()
+            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+            if uploaded_file:
+                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
+                st.dataframe(payoff_matrix)
+        else:
+            payoff_matrix, criterion_types = get_payoff_matrix()
+
+        # Step 1: CRITIC Normalization
+        normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
+        st.subheader("Normalized Matrix (CRITIC):")
+        st.dataframe(normalized_matrix_critic)
+
+        # Step 2: Calculate CRITIC Weights
+        weights_critic = calculate_critic_weights(normalized_matrix_critic)
+        st.subheader("Criterion Weights (CRITIC):")
+        st.dataframe(pd.DataFrame(weights_critic).transpose())
+
+        # Step 3: Calculate MOORA Scores
+        moora_scores = calculate_critic_moora_scores(normalized_matrix_critic, weights_critic, criterion_types)
+        st.subheader("MOORA Scores:")
+        st.dataframe(pd.DataFrame(moora_scores, columns=['MOORA Score']))
+
+        # Step 4: Calculate 3N Scores
+        nag_scores = calculate_3n_scores(moora_scores, normalized_matrix_critic, weights_critic, criterion_types)
+        st.subheader("3N Scores:")
+        st.dataframe(pd.DataFrame(nag_scores, columns=['3N Score']))
+
+        # Step 5: Final Rankings
+        final_rankings = rank_alternatives(nag_scores)
+        st.subheader("Final Rankings:")
+        st.dataframe(final_rankings)
+
+        # Plot the rankings
+        fig = px.bar(
+            final_rankings,
+            x='Alternative',
+            y='Score',
+            title='Final Rankings of Alternatives',
+            labels={'Score': '3N Score'}
+        )
+        fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
+        st.plotly_chart(fig)
+
+    elif choice == "CRITIC-GRA-3N":
+        st.title("CRITIC-GRA-3N Method MCDA Calculator")
+        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
+
+        if data_source == "Upload Excel":
+            st.write("Download the template to fill out the data:")
+            download_template()
+            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+            if uploaded_file:
+                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
+                st.dataframe(payoff_matrix)
+        else:
+            payoff_matrix, criterion_types = get_payoff_matrix()
+
+        # Step 1: CRITIC Normalization
+        normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
+        st.subheader("Normalized Matrix (CRITIC):")
+        st.dataframe(normalized_matrix_critic)
+
+        # Step 2: Calculate CRITIC-GRA-3N Weights
+        weights_critic_gra = calculate_critic_gra_3n_weights(normalized_matrix_critic)
+        st.subheader("Criterion Weights (CRITIC-GRA-3N):")
+        st.dataframe(pd.DataFrame(weights_critic_gra).transpose())
+
+        # Step 3: Calculate Grey Coefficients
+        grey_coefficients = calculate_grey_coefficient(normalized_matrix_critic, weights_critic_gra, criterion_types)
+        st.subheader("Grey Coefficients:")
+        st.dataframe(pd.DataFrame(grey_coefficients, columns=['Grey Coefficient']))
+
+        # Step 4: Calculate 3N Scores
+        nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
+        st.subheader("3N Scores:")
+        st.dataframe(pd.DataFrame(nag_scores, columns=['3N Score']))
+
+        # Step 5: Final Rankings
+        final_rankings = rank_alternatives(nag_scores)
+        st.subheader("Final Rankings:")
+        st.dataframe(final_rankings)
+
+        # Plot the rankings
+        fig = px.bar(
+            final_rankings,
+            x='Alternative',
+            y='Score',
+            title='Final Rankings of Alternatives',
+            labels={'Score': '3N Score'}
+        )
+        fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
+        st.plotly_chart(fig)
+
     else:
         st.subheader("About")
-        st.write("The PSI Method is a method created by Maniya et al. [2010]")
-        st.write("The Hybrid MCDA Method MPSI-MARA is a method created by Gligoric et al. [2022]")
-        st.write("The Hybrid MCDA method MPSI-ARLON is a method created by Kara et al. [2024]")
-        st.write("The LOPCOW-DOBI hybrid MCDA method is a method created by Ecer [2023]")
-        st.write("All Articles")
-        st.write("https://www.sciencedirect.com/science/article/abs/pii/S0261306909006396?via%3Dihub")
-        st.write('https://www.mdpi.com/2079-8954/10/6/248')
-        st.write("https://doi.org/10.1016/j.seps.2024.101822")
-        st.write("https://linkinghub.elsevier.com/retrieve/pii/S0305048322000974")
+        st.write("MEGA-MCDA is a comprehensive calculator that implements multiple Multicriteria Decision Analysis (MCDA) methods:")
+        st.write("1. PSI Method: https://www.sciencedirect.com/science/article/abs/pii/S0261306909006396?via%3Dihub")
+        st.write("2. MPSI-MARA: https://www.mdpi.com/2079-8954/10/6/248")
+        st.write("3. MPSI-ARLON: https://doi.org/10.1016/j.seps.2024.101822")
+        st.write("4. LOPCOW-DOBI: https://linkinghub.elsevier.com/retrieve/pii/S0305048322000974")
+        st.write("5. SWARA-MOORA-3NAG: https://github.com/mcda-software/SWARA-MOORA-3NAG")
+        st.write("6. CRITIC-MOORA-3N: https://github.com/lorransr/critic-moora-3n-method")
+        st.write("7. CRITIC-GRA-3N: https://github.com/mcda-software/CRITIC-GRA-3N")
         st.write("To cite this work:")
         st.write("Araujo, Tullio Mozart Pires de Castro; Gomes, Carlos Francisco Simões.; Santos, Marcos dos. MEGA-MCDA (v1), Universidade Federal Fluminense, Niterói, Rio de Janeiro, 2024.")
     
