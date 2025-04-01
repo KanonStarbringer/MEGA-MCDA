@@ -1475,6 +1475,10 @@ def main():
         
         data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
         
+        # Initialize variables
+        payoff_matrix = None
+        criterion_types = None
+        
         if data_source == "Upload Excel":
             st.write("Download the template to fill out the data:")
             download_template()
@@ -1485,54 +1489,58 @@ def main():
         else:
             payoff_matrix, criterion_types = get_payoff_matrix()
         
-        # Calculate rankings for all methods
-        with st.spinner('Calculating rankings for all methods...'):
-            rankings = get_all_method_rankings(payoff_matrix, criterion_types)
-        
-        # Create method selection widget
-        available_methods = list(rankings.keys())
-        selected_methods = st.multiselect(
-            "Select methods to compare:",
-            options=available_methods,
-            default=available_methods,
-            help="Choose which methods you want to display in the comparison graph"
-        )
-        
-        if selected_methods:
-            # Filter rankings to include only selected methods
-            filtered_rankings = {method: rankings[method] for method in selected_methods}
+        # Only proceed if we have valid data
+        if payoff_matrix is not None and criterion_types is not None:
+            # Calculate rankings for all methods
+            with st.spinner('Calculating rankings for all methods...'):
+                rankings = get_all_method_rankings(payoff_matrix, criterion_types)
             
-            # Create and display the comparison graph
-            st.subheader("Ranking Comparison Graph")
-            fig = create_comparison_graph(filtered_rankings)
-            st.plotly_chart(fig, use_container_width=True)
+            # Create method selection widget
+            available_methods = list(rankings.keys())
+            selected_methods = st.multiselect(
+                "Select methods to compare:",
+                options=available_methods,
+                default=available_methods,
+                help="Choose which methods you want to display in the comparison graph"
+            )
             
-            # Display a summary table of rankings
-            st.subheader("Ranking Summary Table")
-            
-            # Get the maximum number of alternatives across selected methods
-            max_alternatives = max(len(ranking_df) for ranking_df in filtered_rankings.values())
-            
-            # Create a dictionary with padded lists to ensure equal length
-            summary_data = {}
-            for method, ranking_df in filtered_rankings.items():
-                # Get the list of alternatives
-                alternatives = ranking_df['Alternative'].tolist()
-                # Pad the list with empty strings if necessary
-                if len(alternatives) < max_alternatives:
-                    alternatives.extend([''] * (max_alternatives - len(alternatives)))
-                summary_data[method] = alternatives
-            
-            # Create DataFrame with the padded data
-            summary_df = pd.DataFrame(summary_data)
-            
-            # Add a rank column
-            summary_df.insert(0, 'Rank', range(1, max_alternatives + 1))
-            
-            # Display the summary table
-            st.dataframe(summary_df)
+            if selected_methods:
+                # Filter rankings to include only selected methods
+                filtered_rankings = {method: rankings[method] for method in selected_methods}
+                
+                # Create and display the comparison graph
+                st.subheader("Ranking Comparison Graph")
+                fig = create_comparison_graph(filtered_rankings)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Display a summary table of rankings
+                st.subheader("Ranking Summary Table")
+                
+                # Get the maximum number of alternatives across selected methods
+                max_alternatives = max(len(ranking_df) for ranking_df in filtered_rankings.values())
+                
+                # Create a dictionary with padded lists to ensure equal length
+                summary_data = {}
+                for method, ranking_df in filtered_rankings.items():
+                    # Get the list of alternatives
+                    alternatives = ranking_df['Alternative'].tolist()
+                    # Pad the list with empty strings if necessary
+                    if len(alternatives) < max_alternatives:
+                        alternatives.extend([''] * (max_alternatives - len(alternatives)))
+                    summary_data[method] = alternatives
+                
+                # Create DataFrame with the padded data
+                summary_df = pd.DataFrame(summary_data)
+                
+                # Add a rank column
+                summary_df.insert(0, 'Rank', range(1, max_alternatives + 1))
+                
+                # Display the summary table
+                st.dataframe(summary_df)
+            else:
+                st.warning("Please select at least one method to compare.")
         else:
-            st.warning("Please select at least one method to compare.")
+            st.info("Please input your data using either manual input or by uploading an Excel file to see the comparison.")
 
     else:
         st.subheader("About")
@@ -1549,7 +1557,7 @@ def main():
     
     # Add logo to the sidebar
     logo_path = "https://i.imgur.com/g7fITf4.png"  # Replace with the actual path to your logo image file
-    st.sidebar.image(logo_path, use_column_width=True)
+    st.sidebar.image(logo_path, use_container_width=True)
 
 
 if __name__ == "__main__":
