@@ -1024,6 +1024,12 @@ def get_all_method_rankings(payoff_matrix, criterion_types):
     nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
     rankings['CRITIC-GRA-3N'] = rank_alternatives(nag_scores)
     
+    # MPSI-WASPAS Method
+    normalized_matrix = mpsi_waspas_normalize(payoff_matrix, criterion_types)
+    weights = calculate_mpsi_waspas_weights(normalized_matrix)
+    waspas_rankings = calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value=0.5)
+    rankings['MPSI-WASPAS'] = waspas_rankings
+    
     return rankings
 
 def create_comparison_graph(rankings):
@@ -1083,8 +1089,116 @@ def create_comparison_graph(rankings):
     
     return fig
 
+def mpsi_waspas_normalize(matrix, criterion_types):
+    """
+    Normalize the decision matrix using MPSI-WASPAS method.
+    
+    Parameters:
+    - matrix: The decision matrix (alternatives x criteria)
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - Normalized matrix
+    """
+    normalized_matrix = matrix.copy()
+    
+    for j, criterion_type in enumerate(criterion_types):
+        if criterion_type == "Benefit":
+            col_max = matrix.iloc[:, j+1].max()
+            normalized_matrix.iloc[:, j+1] = matrix.iloc[:, j+1] / col_max
+        else:  # Cost criterion
+            col_min = matrix.iloc[:, j+1].min()
+            normalized_matrix.iloc[:, j+1] = col_min / matrix.iloc[:, j+1]
+    
+    return normalized_matrix
+
+def calculate_mpsi_waspas_weights(normalized_matrix):
+    """
+    Calculate weights using MPSI-WASPAS method.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    
+    Returns:
+    - Weights for each criterion
+    """
+    # Calculate mean value for each criterion
+    mean_values = normalized_matrix.iloc[:, 1:].mean()
+    
+    # Calculate standard deviation for each criterion
+    std_dev = normalized_matrix.iloc[:, 1:].std()
+    
+    # Calculate weights using MPSI formula
+    weights = std_dev / (mean_values + std_dev)
+    
+    # Normalize weights
+    weights = weights / weights.sum()
+    
+    return weights
+
+def calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_value=0.5):
+    """
+    Calculate WASPAS scores for each alternative.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    - lambda_value: Weight parameter for WASPAS (default: 0.5)
+    
+    Returns:
+    - WASPAS scores for each alternative
+    """
+    # Calculate WSM scores
+    wsm_scores = np.zeros(normalized_matrix.shape[0])
+    for i in range(normalized_matrix.shape[0]):
+        for j, criterion_type in enumerate(criterion_types):
+            if criterion_type == "Benefit":
+                wsm_scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
+            else:  # Cost criterion
+                wsm_scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
+    
+    # Calculate WPM scores
+    wpm_scores = np.ones(normalized_matrix.shape[0])
+    for i in range(normalized_matrix.shape[0]):
+        for j, criterion_type in enumerate(criterion_types):
+            if criterion_type == "Benefit":
+                wpm_scores[i] *= (normalized_matrix.iloc[i, j+1] ** weights[j])
+            else:  # Cost criterion
+                wpm_scores[i] *= (normalized_matrix.iloc[i, j+1] ** weights[j])
+    
+    # Calculate WASPAS scores
+    waspas_scores = lambda_value * wsm_scores + (1 - lambda_value) * wpm_scores
+    
+    return waspas_scores
+
+def calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value=0.5):
+    """
+    Calculate final rankings using MPSI-WASPAS method.
+    
+    Parameters:
+    - normalized_matrix: The normalized decision matrix
+    - weights: Weights for each criterion
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    - lambda_value: Weight parameter for WASPAS (default: 0.5)
+    
+    Returns:
+    - DataFrame with alternatives and their rankings
+    """
+    scores = calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_value)
+    
+    rankings = pd.DataFrame({
+        'Alternative': [f'A{i+1}' for i in range(len(scores))],
+        'Score': scores
+    })
+    
+    # Sort by score in descending order
+    rankings = rankings.sort_values(by='Score', ascending=False).reset_index(drop=True)
+    
+    return rankings
+
 def main():
-    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "Method Comparison", "About"]
+    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "MPSI-WASPAS", "Method Comparison", "About"]
 
     choice = st.sidebar.selectbox("Menu", menu)
 
@@ -1100,6 +1214,7 @@ def main():
         st.write("5. SWARA-MOORA-3NAG - A hybrid method combining SWARA, MOORA, and 3NAG for advanced decision analysis")
         st.write("6. CRITIC-MOORA-3N - A hybrid method combining CRITIC, MOORA, and 3N for objective decision analysis")
         st.write("7. CRITIC-GRA-3N - A hybrid method combining CRITIC, GRA, and 3N for objective decision analysis")
+        st.write("8. MPSI-WASPAS - A hybrid method combining MPSI and WASPAS for multi-criteria decision analysis")
         st.write("To use this Calculator:")
         st.write("1. Select the desired method from the sidebar menu")
         st.write("2. Choose between manual input or uploading an Excel file")
@@ -1469,6 +1584,62 @@ def main():
         fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
         st.plotly_chart(fig)
 
+    elif choice == "MPSI-WASPAS":
+        st.title("MPSI-WASPAS Method MCDA Calculator")
+        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
+
+        # Initialize variables
+        payoff_matrix = None
+        criterion_types = None
+
+        if data_source == "Upload Excel":
+            st.write("Download the template to fill out the data:")
+            download_template()
+            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+            if uploaded_file:
+                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
+                st.dataframe(payoff_matrix)
+        else:
+            payoff_matrix, criterion_types = get_payoff_matrix()
+
+        # Only proceed if we have valid data
+        if payoff_matrix is not None and criterion_types is not None:
+            # Step 1: MPSI-WASPAS Normalization
+            normalized_matrix = mpsi_waspas_normalize(payoff_matrix, criterion_types)
+            st.subheader("Normalized Matrix (MPSI-WASPAS):")
+            st.dataframe(normalized_matrix)
+
+            # Step 2: Calculate MPSI-WASPAS Weights
+            weights = calculate_mpsi_waspas_weights(normalized_matrix)
+            st.subheader("Criterion Weights (MPSI-WASPAS):")
+            st.dataframe(pd.DataFrame(weights).transpose())
+
+            # Step 3: Calculate WASPAS Scores
+            scores = calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_value=0.5)
+            st.subheader("WASPAS Scores:")
+            st.dataframe(pd.DataFrame(scores, columns=['WASPAS Score']))
+
+            # Step 4: Set lambda value
+            lambda_value = st.slider("Lambda Value", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+
+            # Step 5: Final Rankings
+            rankings = calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value)
+            st.subheader("Final Rankings:")
+            st.dataframe(rankings)
+
+            # Plot the rankings
+            fig = px.bar(
+                rankings,
+                x='Alternative',
+                y='Score',
+                title='Final Rankings of Alternatives',
+                labels={'Score': 'WASPAS Score'}
+            )
+            fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='WASPAS Score')
+            st.plotly_chart(fig)
+        else:
+            st.info("Please input your data using either manual input or by uploading an Excel file to see the results.")
+
     elif choice == "Method Comparison":
         st.title("Method Comparison")
         st.write("This section compares the rankings obtained from all methods using the same input data.")
@@ -1552,6 +1723,7 @@ def main():
         st.write("5. SWARA-MOORA-3NAG: https://github.com/mcda-software/SWARA-MOORA-3NAG")
         st.write("6. CRITIC-MOORA-3N: https://github.com/lorransr/critic-moora-3n-method")
         st.write("7. CRITIC-GRA-3N: https://github.com/mcda-software/CRITIC-GRA-3N")
+        st.write("8. MPSI-WASPAS: https://github.com/mcda-software/MPSI-WASPAS")
         st.write("To cite this work:")
         st.write("Araujo, Tullio Mozart Pires de Castro; Gomes, Carlos Francisco Simões.; Santos, Marcos dos. MEGA-MCDA (v1), Universidade Federal Fluminense, Niterói, Rio de Janeiro, 2024.")
     
