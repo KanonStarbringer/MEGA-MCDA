@@ -950,8 +950,141 @@ def calculate_3n_grey_scores(grey_coefficients, normalized_matrix, weights, crit
     
     return scores
 
+def get_all_method_rankings(payoff_matrix, criterion_types):
+    """
+    Calculate rankings for all methods using the same input data.
+    
+    Parameters:
+    - payoff_matrix: The decision matrix
+    - criterion_types: List of "Benefit" or "Cost" for each criterion
+    
+    Returns:
+    - Dictionary containing rankings for each method
+    """
+    rankings = {}
+    
+    # PSI Method
+    normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
+    PSI_variables_df = calculate_PSI_variables(normalized_matrix)
+    psi_scores = PSI_variables_df['psi'].values
+    rankings['PSI'] = rank_alternatives(psi_scores)
+    
+    # MPSI-MARA Method
+    normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
+    variables_df = calculate_variables(normalized_matrix)
+    new_matrix = calculate_new_matrix(normalized_matrix, variables_df['w'])
+    set_Sj = create_set_Sj(new_matrix)
+    set_Smax, set_Smin = split_sets_Smax_Smin(criterion_types, set_Sj)
+    set_Tmax, set_Tmin = create_set_Tmax_Tmin(new_matrix, criterion_types)
+    T_ik, T_il = calculate_T_ik_T_il(set_Tmax, set_Tmin)
+    Sk = sum(set_Smax.values())
+    Sl = sum(set_Smin.values())
+    f_opt = optimal_alternative_function(Sk, Sl)
+    alternative_functions = {alt: alternative_function(T_ik[alt], T_il[alt]) for alt in T_ik.keys()}
+    def_opt_integral = calculate_definite_integral(f_opt, 0, 1)
+    def_integrals = {alt: calculate_definite_integral(func, 0, 1) for alt, func in alternative_functions.items()}
+    mpsi_mara_scores = [def_integrals[alt] for alt in sorted(def_integrals.keys())]
+    rankings['MPSI-MARA'] = rank_alternatives(mpsi_mara_scores)
+    
+    # MPSI-ARLON Method
+    normalized_matrix_arlon = arlon_normalize(payoff_matrix, criterion_types)
+    weights = calculate_arlon_weights(normalized_matrix_arlon)
+    arlon_rankings = calculate_arlon_rankings(normalized_matrix_arlon, weights)
+    rankings['MPSI-ARLON'] = arlon_rankings
+    
+    # LOPCOW-DOBI Method
+    normalized_matrix_lopcow = lopcow_normalize(payoff_matrix, criterion_types)
+    weights_lopcow = calculate_lopcow_weights(normalized_matrix_lopcow)
+    normalized_matrix_dobi = dobi_normalize(payoff_matrix, criterion_types)
+    f_dhat_matrix = f_dhat(normalized_matrix_dobi)
+    Z_L1_values = Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, 0.8, 0.2, 2.0)
+    Z_L2_values = Z_i_2_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, 0.8, 0.2, 2.0)
+    integrated_dobi_scores = dobi_R_i(Z_L1_values, Z_L2_values, 1.0)
+    rankings['LOPCOW-DOBI'] = dobi_rank_alternatives(integrated_dobi_scores)
+    
+    # SWARA-MOORA-3NAG Method
+    normalized_matrix_swara = swara_normalize(payoff_matrix, criterion_types)
+    weights_swara = calculate_swara_weights(normalized_matrix_swara)
+    normalized_matrix_moora = moora_normalize(payoff_matrix)
+    moora_scores = calculate_moora_scores(normalized_matrix_moora, weights_swara, criterion_types)
+    nag_scores = calculate_3nag_scores(moora_scores, normalized_matrix_moora, weights_swara, criterion_types)
+    rankings['SWARA-MOORA-3NAG'] = rank_alternatives(nag_scores)
+    
+    # CRITIC-MOORA-3N Method
+    normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
+    weights_critic = calculate_critic_weights(normalized_matrix_critic)
+    moora_scores = calculate_critic_moora_scores(normalized_matrix_critic, weights_critic, criterion_types)
+    nag_scores = calculate_3n_scores(moora_scores, normalized_matrix_critic, weights_critic, criterion_types)
+    rankings['CRITIC-MOORA-3N'] = rank_alternatives(nag_scores)
+    
+    # CRITIC-GRA-3N Method
+    normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
+    weights_critic_gra = calculate_critic_gra_3n_weights(normalized_matrix_critic)
+    grey_coefficients = calculate_grey_coefficient(normalized_matrix_critic, weights_critic_gra, criterion_types)
+    nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
+    rankings['CRITIC-GRA-3N'] = rank_alternatives(nag_scores)
+    
+    return rankings
+
+def create_comparison_graph(rankings):
+    """
+    Create a line graph comparing rankings across all methods.
+    
+    Parameters:
+    - rankings: Dictionary containing rankings for each method
+    
+    Returns:
+    - Plotly figure object
+    """
+    # Create a DataFrame for plotting
+    plot_data = []
+    for method, ranking_df in rankings.items():
+        for idx, row in ranking_df.iterrows():
+            plot_data.append({
+                'Method': method,
+                'Alternative': row['Alternative'],
+                'Rank': idx + 1  # Convert to 1-based ranking
+            })
+    
+    df_plot = pd.DataFrame(plot_data)
+    
+    # Sort alternatives in ascending order
+    df_plot['Alternative_Num'] = df_plot['Alternative'].str.extract('(\d+)').astype(int)
+    df_plot = df_plot.sort_values('Alternative_Num')
+    
+    # Create the line plot
+    fig = px.line(
+        df_plot,
+        x='Alternative',
+        y='Rank',
+        color='Method',
+        title='Method Comparison: Rankings of Alternatives',
+        labels={'Rank': 'Ranking Position', 'Alternative': 'Alternative'},
+        markers=True  # Add markers at each point
+    )
+    
+    # Update layout for better visualization
+    fig.update_layout(
+        yaxis=dict(
+            title='Ranking Position',
+            tickmode='linear',
+            tick0=1,
+            dtick=1,
+            autorange='reversed'  # Reverse y-axis so rank 1 is at the top
+        ),
+        xaxis=dict(
+            title='Alternative',
+            categoryorder='array',  # Use custom ordering
+            categoryarray=sorted(df_plot['Alternative'].unique(), key=lambda x: int(x[1:]))  # Sort by number
+        ),
+        showlegend=True,
+        legend_title='Method'
+    )
+    
+    return fig
+
 def main():
-    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "About"]
+    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "Method Comparison", "About"]
 
     choice = st.sidebar.selectbox("Menu", menu)
 
@@ -1336,6 +1469,71 @@ def main():
         fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
         st.plotly_chart(fig)
 
+    elif choice == "Method Comparison":
+        st.title("Method Comparison")
+        st.write("This section compares the rankings obtained from all methods using the same input data.")
+        
+        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
+        
+        if data_source == "Upload Excel":
+            st.write("Download the template to fill out the data:")
+            download_template()
+            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+            if uploaded_file:
+                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
+                st.dataframe(payoff_matrix)
+        else:
+            payoff_matrix, criterion_types = get_payoff_matrix()
+        
+        # Calculate rankings for all methods
+        with st.spinner('Calculating rankings for all methods...'):
+            rankings = get_all_method_rankings(payoff_matrix, criterion_types)
+        
+        # Create method selection widget
+        available_methods = list(rankings.keys())
+        selected_methods = st.multiselect(
+            "Select methods to compare:",
+            options=available_methods,
+            default=available_methods,
+            help="Choose which methods you want to display in the comparison graph"
+        )
+        
+        if selected_methods:
+            # Filter rankings to include only selected methods
+            filtered_rankings = {method: rankings[method] for method in selected_methods}
+            
+            # Create and display the comparison graph
+            st.subheader("Ranking Comparison Graph")
+            fig = create_comparison_graph(filtered_rankings)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Display a summary table of rankings
+            st.subheader("Ranking Summary Table")
+            
+            # Get the maximum number of alternatives across selected methods
+            max_alternatives = max(len(ranking_df) for ranking_df in filtered_rankings.values())
+            
+            # Create a dictionary with padded lists to ensure equal length
+            summary_data = {}
+            for method, ranking_df in filtered_rankings.items():
+                # Get the list of alternatives
+                alternatives = ranking_df['Alternative'].tolist()
+                # Pad the list with empty strings if necessary
+                if len(alternatives) < max_alternatives:
+                    alternatives.extend([''] * (max_alternatives - len(alternatives)))
+                summary_data[method] = alternatives
+            
+            # Create DataFrame with the padded data
+            summary_df = pd.DataFrame(summary_data)
+            
+            # Add a rank column
+            summary_df.insert(0, 'Rank', range(1, max_alternatives + 1))
+            
+            # Display the summary table
+            st.dataframe(summary_df)
+        else:
+            st.warning("Please select at least one method to compare.")
+
     else:
         st.subheader("About")
         st.write("MEGA-MCDA is a comprehensive calculator that implements multiple Multicriteria Decision Analysis (MCDA) methods:")
@@ -1351,7 +1549,7 @@ def main():
     
     # Add logo to the sidebar
     logo_path = "https://i.imgur.com/g7fITf4.png"  # Replace with the actual path to your logo image file
-    st.sidebar.image(logo_path, use_container_width=True)
+    st.sidebar.image(logo_path, use_column_width=True)
 
 
 if __name__ == "__main__":
