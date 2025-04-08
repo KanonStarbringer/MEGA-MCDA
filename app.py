@@ -1197,10 +1197,136 @@ def calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, 
     
     return rankings
 
+def wenslo_normalize(matrix, criterion_types):
+    """
+    Normaliza a matriz usando o método WENSLO.
+    Cada elemento é dividido pela soma de todos os elementos da sua coluna.
+    
+    Args:
+        matrix (pd.DataFrame): Matriz de decisão
+        criterion_types (list): Lista de tipos de critérios ('Benefit' ou 'Cost')
+        
+    Returns:
+        pd.DataFrame: Matriz normalizada
+    """
+    normalized = matrix.copy()
+    
+    # Para cada coluna (critério), exceto a primeira que contém os nomes das alternativas
+    for j in range(1, matrix.shape[1]):
+        # Calcula a soma da coluna
+        col_sum = matrix.iloc[:, j].sum()
+        # Normaliza dividindo cada elemento pela soma da coluna
+        normalized.iloc[:, j] = matrix.iloc[:, j] / col_sum
+    
+    return normalized
+
+def calculate_wenslo_weights(normalized_matrix):
+    """
+    Calcula os pesos usando o método WENSLO.
+    
+    Args:
+        normalized_matrix (pd.DataFrame): Matriz normalizada
+        
+    Returns:
+        dict: Pesos calculados para cada critério
+    """
+    # Calculate delta_z (Sturges' rule)
+    m = len(normalized_matrix)
+    delta_z = {}
+    for col in normalized_matrix.columns[1:]:
+        delta_z[col] = (normalized_matrix[col].max() - normalized_matrix[col].min()) / (1 + 3.322 * np.log10(m))
+
+    # Calculate slope, envelope, and q_j
+    tan_phi = {}
+    envelope = {}
+    q = {}
+    for col in normalized_matrix.columns[1:]:
+        z = normalized_matrix[col].values
+        tan_phi[col] = z.sum() / ((m - 1) * delta_z[col])
+        envelope[col] = sum(np.sqrt((z[i+1] - z[i])**2 + delta_z[col]**2) for i in range(m - 1))
+        q[col] = envelope[col] / tan_phi[col]
+
+    # Final weights
+    total_q = sum(q.values())
+    weights = {col: val / total_q for col, val in q.items()}
+    return weights
+
+def calculate_wenslo_mara_rankings(payoff_matrix, criterion_types):
+    """
+    Calcula os rankings usando o método WENSLO-MARA.
+    
+    Args:
+        payoff_matrix (pd.DataFrame): Matriz de payoff
+        criterion_types (list): Lista de tipos de critérios ('Benefit' ou 'Cost')
+        
+    Returns:
+        list: Lista de tuplas (alternativa, score) ordenada por score decrescente
+    """
+    # Normalize using WENSLO
+    normalized_matrix = wenslo_normalize(payoff_matrix, criterion_types)
+    weights = calculate_wenslo_weights(normalized_matrix)
+    
+    scores = {}
+    for i, row in normalized_matrix.iterrows():
+        alt = row[0]
+        score = sum(row[j+1] * weights[normalized_matrix.columns[j+1]] for j in range(len(criterion_types)))
+        scores[alt] = score
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+def calculate_wenslo_waspas_rankings(payoff_matrix, criterion_types, lambda_val=0.5):
+    """
+    Calcula os rankings usando o método WENSLO-WASPAS.
+    
+    Args:
+        payoff_matrix (pd.DataFrame): Matriz de payoff
+        criterion_types (list): Lista de tipos de critérios ('Benefit' ou 'Cost')
+        lambda_val (float): Parâmetro de balanceamento (default: 0.5)
+        
+    Returns:
+        list: Lista de tuplas (alternativa, score) ordenada por score decrescente
+    """
+    # Normalize using WENSLO
+    normalized_matrix = wenslo_normalize(payoff_matrix, criterion_types)
+    weights = calculate_wenslo_weights(normalized_matrix)
+
+    scores = {}
+    for i, row in normalized_matrix.iterrows():
+        alt = row[0]
+        weighted_sum = sum(weights[normalized_matrix.columns[j+1]] * row[j+1] for j in range(len(criterion_types)))
+        weighted_product = np.prod([row[j+1]**weights[normalized_matrix.columns[j+1]] for j in range(len(criterion_types))])
+        scores[alt] = lambda_val * weighted_sum + (1 - lambda_val) * weighted_product
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+def calculate_wenslo_arlon_rankings(payoff_matrix, criterion_types):
+    """
+    Calcula os rankings usando o método WENSLO-ARLON.
+    
+    Args:
+        payoff_matrix (pd.DataFrame): Matriz de payoff
+        criterion_types (list): Lista de tipos de critérios ('Benefit' ou 'Cost')
+        
+    Returns:
+        list: Lista de tuplas (alternativa, score) ordenada por score decrescente
+    """
+    # Normalize using WENSLO
+    normalized_matrix = wenslo_normalize(payoff_matrix, criterion_types)
+    weights = calculate_wenslo_weights(normalized_matrix)
+
+    scores = {}
+    for i, row in normalized_matrix.iterrows():
+        alt = row[0]
+        score = sum(np.log1p(row[j+1]) * weights[normalized_matrix.columns[j+1]] for j in range(len(criterion_types)))
+        scores[alt] = score
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
 def main():
-    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "MPSI-WASPAS", "Method Comparison", "About"]
+    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "MPSI-WASPAS", "WENSLO-MARA", "WENSLO-ARLON", "WENSLO-WASPAS", "Method Comparison", "About"]
 
     choice = st.sidebar.selectbox("Menu", menu)
+
+    # Inicializar variáveis
+    payoff_matrix = None
+    criterion_types = None
 
     if choice == "Home":
         st.header("Home")
@@ -1222,215 +1348,8 @@ def main():
         st.write("4. Specify whether each criterion is of benefit (more is better) or cost (less is better)")
         st.write("5. Input your data and get the results")
 
-    elif choice == "PSI":
-        st.title("PSI Calculator")
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
-        
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()  # Excel template download button
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-
-        normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix:")
-        st.dataframe(normalized_matrix)
-
-        PSI_variables_df = calculate_PSI_variables(normalized_matrix)
-        st.subheader("Calculated Variables:")
-        st.dataframe(PSI_variables_df)
-
-        # Plot the PSI weights
-        fig = px.bar(PSI_variables_df, x=PSI_variables_df.index, y='psi', labels={'index': 'Criteria', 'psi': 'PSI Weight'}, title='PSI Weights for Criteria')
-        st.plotly_chart(fig)
-
-    elif choice == "MPSI-MARA":
-        st.title("MPSI-MARA Hybrid Method MCDA Calculator")
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
-
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()  # Add the download button for the Excel template
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-
-        # Normalize the data
-        normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix:")
-        st.dataframe(normalized_matrix)
-
-        # Calculate the variables (v, p, w)
-        variables_df = calculate_variables(normalized_matrix)
-        st.subheader("Calculated Variables (v, p, w):")
-        st.dataframe(variables_df)
-
-        # Calculate the new matrix
-        new_matrix = calculate_new_matrix(normalized_matrix, variables_df['w'])
-        st.subheader("New Matrix:")
-        st.dataframe(new_matrix)
-
-        # Calculate the sets Sj, Smax, Smin
-        set_Sj = create_set_Sj(new_matrix)
-        set_Smax, set_Smin = split_sets_Smax_Smin(criterion_types, set_Sj)
-        st.subheader("Set S_j (Transposed):")
-        st.dataframe(pd.DataFrame(set_Sj, index=['Value']))  # Display transposed dataframe
-
-        # Calculate T_ik and T_il
-        set_Tmax, set_Tmin = create_set_Tmax_Tmin(new_matrix, criterion_types)
-        T_ik, T_il = calculate_T_ik_T_il(set_Tmax, set_Tmin)
-        
-        # Display T_ik and T_il
-        st.subheader("T_ik for each alternative:")
-        st.dataframe(pd.DataFrame(T_ik, index=['Value']))
-        st.subheader("T_il for each alternative:")
-        st.dataframe(pd.DataFrame(T_il, index=['Value']))
-
-        # Calculate the optimal alternative function
-        Sk = sum(set_Smax.values())
-        Sl = sum(set_Smin.values())
-        st.subheader(f"Optimal Alternative Function: Sk={Sk}, Sl={Sl}")
-        f_opt = optimal_alternative_function(Sk, Sl)
-        st.write(f"f_opt(x) = ({Sl} - {Sk}) * x + {Sk}")
-
-        # Calculate the alternative functions for each alternative
-        alternative_functions = {alt: alternative_function(T_ik[alt], T_il[alt]) for alt in T_ik.keys()}
-        st.subheader("Alternative Functions:")
-        for alt, func in alternative_functions.items():
-            st.write(f"f_{alt}(x) = ({T_il[alt]} - {T_ik[alt]}) * x + {T_ik[alt]}")
-
-        # Calculate definite integrals
-        def_opt_integral = calculate_definite_integral(f_opt, 0, 1)
-        st.subheader("Definite Integral of Optimal Alternative Function:")
-        st.write(def_opt_integral)
-
-        def_integrals = {alt: calculate_definite_integral(func, 0, 1) for alt, func in alternative_functions.items()}
-        st.subheader("Definite Integrals of Alternative Functions:")
-        for alt, integral in def_integrals.items():
-            st.write(f"Definite Integral of f_{alt}(x): {integral}")
-
-        # Calculate differences and rank alternatives
-        ranked_alternatives = sorted(def_integrals, key=lambda alt: def_opt_integral - def_integrals[alt])
-        st.subheader("Ranking of Alternatives:")
-        for rank, alt in enumerate(ranked_alternatives, 1):
-            st.write(f"Rank {rank}: Alternative {alt}")
-
-    elif choice == "MPSI-ARLON":
-        st.title("MPSI-ARLON Method MCDA Calculator")
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
-
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()  # Add the download button for the Excel template
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-
-        # Normalize using ARLON-specific normalization
-        normalized_matrix_arlon = arlon_normalize(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix (ARLON):")
-        st.dataframe(normalized_matrix_arlon)
-
-        # Calculate weights and rankings
-        weights = calculate_arlon_weights(normalized_matrix_arlon)
-        st.subheader("Criterion Weights (ARLON):")
-        st.dataframe(pd.DataFrame(weights).transpose())  # Display weights as a dataframe
-
-        rankings = calculate_arlon_rankings(normalized_matrix_arlon, weights)
-        st.subheader("Rankings (ARLON):")
-        st.dataframe(rankings)
-
-    elif choice == "LOPCOW-DOBI":
-        st.title("LOPCOW-DOBI Method MCDA Calculator")
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
-
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()  # Template download button for Excel
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-
-        # Normalize the matrix for the LOPCOW method
-        normalized_matrix_lopcow = lopcow_normalize(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix (LOPCOW):")
-        st.dataframe(normalized_matrix_lopcow)
-
-        # Calculate weights using the LOPCOW method
-        weights_lopcow = calculate_lopcow_weights(normalized_matrix_lopcow)
-        st.subheader("Criterion Weights (LOPCOW):")
-        st.dataframe(pd.DataFrame(weights_lopcow, columns=['Weights']).transpose())
-
-        # --- DOBI Method Parameters ---
-        st.subheader("DOBI Parameters")
-        psi1 = st.number_input("Psi 1", min_value=0.0, value=0.8, step=0.1, key='psi1_input')
-        psi2 = st.number_input("Psi 2", min_value=0.0, value=0.2, step=0.1, key='psi2_input')
-        zeta = st.number_input("Zeta", min_value=0.0, value=2.0, step=0.1, key='zeta_input')  # Ensure Zeta >= 0
-        delta = st.number_input("Delta (for integrated value)", min_value=0.0, value=1.0, step=0.1, key='delta_input')
-
-        # --- Normalize the matrix for DOBI ---
-        normalized_matrix_dobi = dobi_normalize(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix (DOBI):")
-        st.dataframe(normalized_matrix_dobi)
-
-        # --- Display f_dhat using LaTeX ---
-        st.subheader("f(dhat) Matrix:")
-        st.latex(r'f(\hat{\partial}) = \frac{\hat{\partial}_{ij}}{\sum \hat{\partial}_{ij}}')  # Display LaTeX formula
-
-        # --- Calculate and display the f_dhat matrix ---
-        f_dhat_matrix = f_dhat(normalized_matrix_dobi)
-        st.dataframe(f_dhat_matrix)
-
-        # --- Calculate the Z_L1 function from DOBI ---
-        #st.subheader("Z_L1 Values (Updated Function)")
-
-        # Call the updated Z_i_1_v2 function to calculate the Z_L1 values
-        Z_L1_values = Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, psi1, psi2, zeta)
-
-        # Display Z_L1 values
-        st.subheader("Z_L1 Values:")
-        st.dataframe(pd.DataFrame(Z_L1_values, columns=["Z_L1"]))
-
-        # --- Calculate the Z_L2 function from DOBI (using new Z_i_2_v2 function) ---
-        #st.subheader("Z_L2 Values (Updated Function)")
-
-        # Call the updated Z_i_2_v2 function to calculate the Z_L2 values
-        Z_L2_values = Z_i_2_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, psi1, psi2, zeta)
-
-        # Display Z_L2 values
-        st.subheader("Z_L2 Values:")
-        st.dataframe(pd.DataFrame(Z_L2_values, columns=["Z_L2"]))
-
-        # --- Calculate the integrated DOBI scores ---
-        #st.subheader("Integrated DOBI Scores")
-
-        # Use the Z_L1 and Z_L2 values to calculate the final integrated value R_i
-        integrated_dobi_scores = dobi_R_i(Z_L1_values, Z_L2_values, delta)
-
-        # Display the integrated scores
-        st.subheader("Integrated DOBI Scores:")
-        st.dataframe(pd.DataFrame(integrated_dobi_scores, columns=["Integrated Score"]))
-
-        # --- Rank Alternatives based on the integrated scores ---
-        rankings_dobi = dobi_rank_alternatives(integrated_dobi_scores)
-        st.subheader("Rankings (DOBI):")
-        st.dataframe(rankings_dobi)
-
-    elif choice == "SWARA-MOORA-3NAG":
-        st.title("SWARA-MOORA-3NAG Method MCDA Calculator")
+    elif choice != "About":  # Para todas as opções exceto Home e About
+        st.title(f"{choice} Calculator")
         data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
 
         if data_source == "Upload Excel":
@@ -1443,289 +1362,574 @@ def main():
         else:
             payoff_matrix, criterion_types = get_payoff_matrix()
 
-        # Step 1: SWARA Normalization
-        normalized_matrix_swara = swara_normalize(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix (SWARA):")
-        st.dataframe(normalized_matrix_swara)
-
-        # Step 2: Calculate SWARA Weights
-        weights_swara = calculate_swara_weights(normalized_matrix_swara)
-        st.subheader("Criterion Weights (SWARA):")
-        st.dataframe(pd.DataFrame(weights_swara).transpose())
-
-        # Step 3: MOORA Normalization
-        normalized_matrix_moora = moora_normalize(payoff_matrix)
-        st.subheader("Normalized Matrix (MOORA):")
-        st.dataframe(normalized_matrix_moora)
-
-        # Step 4: Calculate MOORA Scores
-        moora_scores = calculate_moora_scores(normalized_matrix_moora, weights_swara, criterion_types)
-        st.subheader("MOORA Scores:")
-        st.dataframe(pd.DataFrame(moora_scores, columns=['MOORA Score']))
-
-        # Step 5: Calculate 3NAG Scores
-        nag_scores = calculate_3nag_scores(moora_scores, normalized_matrix_moora, weights_swara, criterion_types)
-        st.subheader("3NAG Scores:")
-        st.dataframe(pd.DataFrame(nag_scores, columns=['3NAG Score']))
-
-        # Step 6: Final Rankings
-        final_rankings = rank_alternatives(nag_scores)
-        st.subheader("Final Rankings:")
-        st.dataframe(final_rankings)
-
-        # Plot the rankings
-        fig = px.bar(
-            final_rankings,
-            x='Alternative',
-            y='Score',
-            title='Final Rankings of Alternatives',
-            labels={'Score': '3NAG Score'}
-        )
-        fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3NAG Score')
-        st.plotly_chart(fig)
-
-    elif choice == "CRITIC-MOORA-3N":
-        st.title("CRITIC-MOORA-3N Method MCDA Calculator")
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
-
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-
-        # Step 1: CRITIC Normalization
-        normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix (CRITIC):")
-        st.dataframe(normalized_matrix_critic)
-
-        # Step 2: Calculate CRITIC Weights
-        weights_critic = calculate_critic_weights(normalized_matrix_critic)
-        st.subheader("Criterion Weights (CRITIC):")
-        st.dataframe(pd.DataFrame(weights_critic).transpose())
-
-        # Step 3: Calculate MOORA Scores
-        moora_scores = calculate_critic_moora_scores(normalized_matrix_critic, weights_critic, criterion_types)
-        st.subheader("MOORA Scores:")
-        st.dataframe(pd.DataFrame(moora_scores, columns=['MOORA Score']))
-
-        # Step 4: Calculate 3N Scores
-        nag_scores = calculate_3n_scores(moora_scores, normalized_matrix_critic, weights_critic, criterion_types)
-        st.subheader("3N Scores:")
-        st.dataframe(pd.DataFrame(nag_scores, columns=['3N Score']))
-
-        # Step 5: Final Rankings
-        final_rankings = rank_alternatives(nag_scores)
-        st.subheader("Final Rankings:")
-        st.dataframe(final_rankings)
-
-        # Plot the rankings
-        fig = px.bar(
-            final_rankings,
-            x='Alternative',
-            y='Score',
-            title='Final Rankings of Alternatives',
-            labels={'Score': '3N Score'}
-        )
-        fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
-        st.plotly_chart(fig)
-
-    elif choice == "CRITIC-GRA-3N":
-        st.title("CRITIC-GRA-3N Method MCDA Calculator")
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
-
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-
-        # Step 1: CRITIC Normalization
-        normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
-        st.subheader("Normalized Matrix (CRITIC):")
-        st.dataframe(normalized_matrix_critic)
-
-        # Step 2: Calculate CRITIC-GRA-3N Weights
-        weights_critic_gra = calculate_critic_gra_3n_weights(normalized_matrix_critic)
-        st.subheader("Criterion Weights (CRITIC-GRA-3N):")
-        st.dataframe(pd.DataFrame(weights_critic_gra).transpose())
-
-        # Step 3: Calculate Grey Coefficients
-        grey_coefficients = calculate_grey_coefficient(normalized_matrix_critic, weights_critic_gra, criterion_types)
-        st.subheader("Grey Coefficients:")
-        st.dataframe(pd.DataFrame(grey_coefficients, columns=['Grey Coefficient']))
-
-        # Step 4: Calculate 3N Scores
-        nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
-        st.subheader("3N Scores:")
-        st.dataframe(pd.DataFrame(nag_scores, columns=['3N Score']))
-
-        # Step 5: Final Rankings
-        final_rankings = rank_alternatives(nag_scores)
-        st.subheader("Final Rankings:")
-        st.dataframe(final_rankings)
-
-        # Plot the rankings
-        fig = px.bar(
-            final_rankings,
-            x='Alternative',
-            y='Score',
-            title='Final Rankings of Alternatives',
-            labels={'Score': '3N Score'}
-        )
-        fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
-        st.plotly_chart(fig)
-
-    elif choice == "MPSI-WASPAS":
-        st.title("MPSI-WASPAS Method MCDA Calculator")
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
-
-        # Initialize variables
-        payoff_matrix = None
-        criterion_types = None
-
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-
-        # Only proceed if we have valid data
+        # Só prosseguir se tivermos dados válidos
         if payoff_matrix is not None and criterion_types is not None:
-            # Step 1: MPSI-WASPAS Normalization
-            normalized_matrix = mpsi_waspas_normalize(payoff_matrix, criterion_types)
-            st.subheader("Normalized Matrix (MPSI-WASPAS):")
-            st.dataframe(normalized_matrix)
+            if choice == "PSI":
+                normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix:")
+                st.dataframe(normalized_matrix)
 
-            # Step 2: Calculate MPSI-WASPAS Weights
-            weights = calculate_mpsi_waspas_weights(normalized_matrix)
-            st.subheader("Criterion Weights (MPSI-WASPAS):")
-            st.dataframe(pd.DataFrame(weights).transpose())
+                PSI_variables_df = calculate_PSI_variables(normalized_matrix)
+                st.subheader("Calculated Variables:")
+                st.dataframe(PSI_variables_df)
 
-            # Step 3: Calculate WASPAS Scores
-            scores = calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_value=0.5)
-            st.subheader("WASPAS Scores:")
-            st.dataframe(pd.DataFrame(scores, columns=['WASPAS Score']))
+                # Plot the PSI weights
+                fig = px.bar(PSI_variables_df, x=PSI_variables_df.index, y='psi', labels={'index': 'Criteria', 'psi': 'PSI Weight'}, title='PSI Weights for Criteria')
+                st.plotly_chart(fig)
 
-            # Step 4: Set lambda value
-            lambda_value = st.slider("Lambda Value", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+            elif choice == "MPSI-MARA":
+                # Normalize the data
+                normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix:")
+                st.dataframe(normalized_matrix)
 
-            # Step 5: Final Rankings
-            rankings = calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value)
-            st.subheader("Final Rankings:")
-            st.dataframe(rankings)
+                # Calculate the variables (v, p, w)
+                variables_df = calculate_variables(normalized_matrix)
+                st.subheader("Calculated Variables (v, p, w):")
+                st.dataframe(variables_df)
 
-            # Plot the rankings
-            fig = px.bar(
-                rankings,
-                x='Alternative',
-                y='Score',
-                title='Final Rankings of Alternatives',
-                labels={'Score': 'WASPAS Score'}
-            )
-            fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='WASPAS Score')
-            st.plotly_chart(fig)
+                # Calculate the new matrix
+                new_matrix = calculate_new_matrix(normalized_matrix, variables_df['w'])
+                st.subheader("New Matrix:")
+                st.dataframe(new_matrix)
+
+                # Calculate the sets Sj, Smax, Smin
+                set_Sj = create_set_Sj(new_matrix)
+                set_Smax, set_Smin = split_sets_Smax_Smin(criterion_types, set_Sj)
+                st.subheader("Set S_j (Transposed):")
+                st.dataframe(pd.DataFrame(set_Sj, index=['Value']))
+
+                # Calculate T_ik and T_il
+                set_Tmax, set_Tmin = create_set_Tmax_Tmin(new_matrix, criterion_types)
+                T_ik, T_il = calculate_T_ik_T_il(set_Tmax, set_Tmin)
+                
+                # Display T_ik and T_il
+                st.subheader("T_ik for each alternative:")
+                st.dataframe(pd.DataFrame(T_ik, index=['Value']))
+                st.subheader("T_il for each alternative:")
+                st.dataframe(pd.DataFrame(T_il, index=['Value']))
+
+                # Calculate the optimal alternative function
+                Sk = sum(set_Smax.values())
+                Sl = sum(set_Smin.values())
+                st.subheader(f"Optimal Alternative Function: Sk={Sk}, Sl={Sl}")
+                f_opt = optimal_alternative_function(Sk, Sl)
+                st.write(f"f_opt(x) = ({Sl} - {Sk}) * x + {Sk}")
+
+                # Calculate the alternative functions for each alternative
+                alternative_functions = {alt: alternative_function(T_ik[alt], T_il[alt]) for alt in T_ik.keys()}
+                st.subheader("Alternative Functions:")
+                for alt, func in alternative_functions.items():
+                    st.write(f"f_{alt}(x) = ({T_il[alt]} - {T_ik[alt]}) * x + {T_ik[alt]}")
+
+                # Calculate definite integrals
+                def_opt_integral = calculate_definite_integral(f_opt, 0, 1)
+                st.subheader("Definite Integral of Optimal Alternative Function:")
+                st.write(def_opt_integral)
+
+                def_integrals = {alt: calculate_definite_integral(func, 0, 1) for alt, func in alternative_functions.items()}
+                st.subheader("Definite Integrals of Alternative Functions:")
+                for alt, integral in def_integrals.items():
+                    st.write(f"Definite Integral of f_{alt}(x): {integral}")
+
+                # Calculate differences and rank alternatives
+                ranked_alternatives = sorted(def_integrals, key=lambda alt: def_opt_integral - def_integrals[alt])
+                st.subheader("Ranking of Alternatives:")
+                for rank, alt in enumerate(ranked_alternatives, 1):
+                    st.write(f"Rank {rank}: Alternative {alt}")
+
+            elif choice == "MPSI-ARLON":
+                # Normalize using ARLON-specific normalization
+                normalized_matrix_arlon = arlon_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (ARLON):")
+                st.dataframe(normalized_matrix_arlon)
+
+                # Calculate weights and rankings
+                weights = calculate_arlon_weights(normalized_matrix_arlon)
+                st.subheader("Criterion Weights (ARLON):")
+                st.dataframe(pd.DataFrame(weights).transpose())
+
+                rankings = calculate_arlon_rankings(normalized_matrix_arlon, weights)
+                st.subheader("Rankings (ARLON):")
+                st.dataframe(rankings)
+
+            elif choice == "LOPCOW-DOBI":
+                # Normalize the matrix for the LOPCOW method
+                normalized_matrix_lopcow = lopcow_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (LOPCOW):")
+                st.dataframe(normalized_matrix_lopcow)
+
+                # Calculate weights using the LOPCOW method
+                weights_lopcow = calculate_lopcow_weights(normalized_matrix_lopcow)
+                st.subheader("Criterion Weights (LOPCOW):")
+                st.dataframe(pd.DataFrame(weights_lopcow, columns=['Weights']).transpose())
+
+                # --- DOBI Method Parameters ---
+                st.subheader("DOBI Parameters")
+                psi1 = st.number_input("Psi 1", min_value=0.0, value=0.8, step=0.1, key='psi1_input')
+                psi2 = st.number_input("Psi 2", min_value=0.0, value=0.2, step=0.1, key='psi2_input')
+                zeta = st.number_input("Zeta", min_value=0.0, value=2.0, step=0.1, key='zeta_input')
+                delta = st.number_input("Delta (for integrated value)", min_value=0.0, value=1.0, step=0.1, key='delta_input')
+
+                # --- Normalize the matrix for DOBI ---
+                normalized_matrix_dobi = dobi_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (DOBI):")
+                st.dataframe(normalized_matrix_dobi)
+
+                # --- Display f_dhat using LaTeX ---
+                st.subheader("f(dhat) Matrix:")
+                st.latex(r'f(\hat{\partial}) = \frac{\hat{\partial}_{ij}}{\sum \hat{\partial}_{ij}}')
+
+                # --- Calculate and display the f_dhat matrix ---
+                f_dhat_matrix = f_dhat(normalized_matrix_dobi)
+                st.dataframe(f_dhat_matrix)
+
+                # --- Calculate the Z_L1 function from DOBI ---
+                Z_L1_values = Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, psi1, psi2, zeta)
+                st.subheader("Z_L1 Values:")
+                st.dataframe(pd.DataFrame(Z_L1_values, columns=["Z_L1"]))
+
+                # --- Calculate the Z_L2 function from DOBI ---
+                Z_L2_values = Z_i_2_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, psi1, psi2, zeta)
+                st.subheader("Z_L2 Values:")
+                st.dataframe(pd.DataFrame(Z_L2_values, columns=["Z_L2"]))
+
+                # --- Calculate the integrated DOBI scores ---
+                integrated_dobi_scores = dobi_R_i(Z_L1_values, Z_L2_values, delta)
+                st.subheader("Integrated DOBI Scores:")
+                st.dataframe(pd.DataFrame(integrated_dobi_scores, columns=["Integrated Score"]))
+
+                # --- Rank Alternatives based on the integrated scores ---
+                rankings_dobi = dobi_rank_alternatives(integrated_dobi_scores)
+                st.subheader("Rankings (DOBI):")
+                st.dataframe(rankings_dobi)
+
+            elif choice == "SWARA-MOORA-3NAG":
+                # Step 1: SWARA Normalization
+                normalized_matrix_swara = swara_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (SWARA):")
+                st.dataframe(normalized_matrix_swara)
+
+                # Step 2: Calculate SWARA Weights
+                weights_swara = calculate_swara_weights(normalized_matrix_swara)
+                st.subheader("Criterion Weights (SWARA):")
+                st.dataframe(pd.DataFrame(weights_swara).transpose())
+
+                # Step 3: MOORA Normalization
+                normalized_matrix_moora = moora_normalize(payoff_matrix)
+                st.subheader("Normalized Matrix (MOORA):")
+                st.dataframe(normalized_matrix_moora)
+
+                # Step 4: Calculate MOORA Scores
+                moora_scores = calculate_moora_scores(normalized_matrix_moora, weights_swara, criterion_types)
+                st.subheader("MOORA Scores:")
+                st.dataframe(pd.DataFrame(moora_scores, columns=['MOORA Score']))
+
+                # Step 5: Calculate 3NAG Scores
+                nag_scores = calculate_3nag_scores(moora_scores, normalized_matrix_moora, weights_swara, criterion_types)
+                st.subheader("3NAG Scores:")
+                st.dataframe(pd.DataFrame(nag_scores, columns=['3NAG Score']))
+
+                # Step 6: Final Rankings
+                final_rankings = rank_alternatives(nag_scores)
+                st.subheader("Final Rankings:")
+                st.dataframe(final_rankings)
+
+                # Plot the rankings
+                fig = px.bar(
+                    final_rankings,
+                    x='Alternative',
+                    y='Score',
+                    title='Final Rankings of Alternatives',
+                    labels={'Score': '3NAG Score'}
+                )
+                fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3NAG Score')
+                st.plotly_chart(fig)
+
+            elif choice == "CRITIC-MOORA-3N":
+                # Step 1: CRITIC Normalization
+                normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (CRITIC):")
+                st.dataframe(normalized_matrix_critic)
+
+                # Step 2: Calculate CRITIC Weights
+                weights_critic = calculate_critic_weights(normalized_matrix_critic)
+                st.subheader("Criterion Weights (CRITIC):")
+                st.dataframe(pd.DataFrame(weights_critic).transpose())
+
+                # Step 3: Calculate MOORA Scores
+                moora_scores = calculate_critic_moora_scores(normalized_matrix_critic, weights_critic, criterion_types)
+                st.subheader("MOORA Scores:")
+                st.dataframe(pd.DataFrame(moora_scores, columns=['MOORA Score']))
+
+                # Step 4: Calculate 3N Scores
+                nag_scores = calculate_3n_scores(moora_scores, normalized_matrix_critic, weights_critic, criterion_types)
+                st.subheader("3N Scores:")
+                st.dataframe(pd.DataFrame(nag_scores, columns=['3N Score']))
+
+                # Step 5: Final Rankings
+                final_rankings = rank_alternatives(nag_scores)
+                st.subheader("Final Rankings:")
+                st.dataframe(final_rankings)
+
+                # Plot the rankings
+                fig = px.bar(
+                    final_rankings,
+                    x='Alternative',
+                    y='Score',
+                    title='Final Rankings of Alternatives',
+                    labels={'Score': '3N Score'}
+                )
+                fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
+                st.plotly_chart(fig)
+
+            elif choice == "CRITIC-GRA-3N":
+                # Step 1: CRITIC Normalization
+                normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (CRITIC):")
+                st.dataframe(normalized_matrix_critic)
+
+                # Step 2: Calculate CRITIC-GRA-3N Weights
+                weights_critic_gra = calculate_critic_gra_3n_weights(normalized_matrix_critic)
+                st.subheader("Criterion Weights (CRITIC-GRA-3N):")
+                st.dataframe(pd.DataFrame(weights_critic_gra).transpose())
+
+                # Step 3: Calculate Grey Coefficients
+                grey_coefficients = calculate_grey_coefficient(normalized_matrix_critic, weights_critic_gra, criterion_types)
+                st.subheader("Grey Coefficients:")
+                st.dataframe(pd.DataFrame(grey_coefficients, columns=['Grey Coefficient']))
+
+                # Step 4: Calculate 3N Scores
+                nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
+                st.subheader("3N Scores:")
+                st.dataframe(pd.DataFrame(nag_scores, columns=['3N Score']))
+
+                # Step 5: Final Rankings
+                final_rankings = rank_alternatives(nag_scores)
+                st.subheader("Final Rankings:")
+                st.dataframe(final_rankings)
+
+                # Plot the rankings
+                fig = px.bar(
+                    final_rankings,
+                    x='Alternative',
+                    y='Score',
+                    title='Final Rankings of Alternatives',
+                    labels={'Score': '3N Score'}
+                )
+                fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
+                st.plotly_chart(fig)
+
+            elif choice == "MPSI-WASPAS":
+                # Step 1: MPSI-WASPAS Normalization
+                normalized_matrix = mpsi_waspas_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (MPSI-WASPAS):")
+                st.dataframe(normalized_matrix)
+
+                # Step 2: Calculate MPSI-WASPAS Weights
+                weights = calculate_mpsi_waspas_weights(normalized_matrix)
+                st.subheader("Criterion Weights (MPSI-WASPAS):")
+                st.dataframe(pd.DataFrame(weights).transpose())
+
+                # Step 3: Calculate WASPAS Scores
+                scores = calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_value=0.5)
+                st.subheader("WASPAS Scores:")
+                st.dataframe(pd.DataFrame(scores, columns=['WASPAS Score']))
+
+                # Step 4: Set lambda value
+                lambda_value = st.slider("Lambda Value", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+
+                # Step 5: Final Rankings
+                rankings = calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value)
+                st.subheader("Final Rankings:")
+                st.dataframe(rankings)
+
+                # Plot the rankings
+                fig = px.bar(
+                    rankings,
+                    x='Alternative',
+                    y='Score',
+                    title='Final Rankings of Alternatives',
+                    labels={'Score': 'WASPAS Score'}
+                )
+                fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='WASPAS Score')
+                st.plotly_chart(fig)
+
+            elif choice == "WENSLO-MARA":
+                # Normalize using WENSLO
+                normalized_matrix = wenslo_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (WENSLO):")
+                st.dataframe(normalized_matrix)
+
+                # Calculate WENSLO weights
+                weights = calculate_wenslo_weights(normalized_matrix)
+                st.subheader("Criterion Weights (WENSLO):")
+                weights_df = pd.DataFrame(weights, index=['Weight']).T
+                st.dataframe(weights_df)
+
+                # Calculate rankings
+                rankings = calculate_wenslo_mara_rankings(payoff_matrix, criterion_types)
+                st.subheader("Rankings:")
+                rankings_df = pd.DataFrame(rankings, columns=['Alternative', 'Score'])
+                st.dataframe(rankings_df)
+
+                # Plot the rankings
+                fig = px.bar(
+                    rankings_df,
+                    x='Alternative',
+                    y='Score',
+                    title='Final Rankings of Alternatives',
+                    labels={'Score': 'WENSLO-MARA Score'}
+                )
+                fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='WENSLO-MARA Score')
+                st.plotly_chart(fig)
+
+            elif choice == "WENSLO-ARLON":
+                # Normalize using WENSLO
+                normalized_matrix = wenslo_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (WENSLO):")
+                st.dataframe(normalized_matrix)
+
+                # Calculate WENSLO weights
+                weights = calculate_wenslo_weights(normalized_matrix)
+                st.subheader("Criterion Weights (WENSLO):")
+                weights_df = pd.DataFrame(weights, index=['Weight']).T
+                st.dataframe(weights_df)
+
+                # Calculate rankings
+                rankings = calculate_wenslo_arlon_rankings(payoff_matrix, criterion_types)
+                st.subheader("Rankings:")
+                rankings_df = pd.DataFrame(rankings, columns=['Alternative', 'Score'])
+                st.dataframe(rankings_df)
+
+                # Plot the rankings
+                fig = px.bar(
+                    rankings_df,
+                    x='Alternative',
+                    y='Score',
+                    title='Final Rankings of Alternatives',
+                    labels={'Score': 'WENSLO-ARLON Score'}
+                )
+                fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='WENSLO-ARLON Score')
+                st.plotly_chart(fig)
+
+            elif choice == "WENSLO-WASPAS":
+                # Normalize using WENSLO
+                normalized_matrix = wenslo_normalize(payoff_matrix, criterion_types)
+                st.subheader("Normalized Matrix (WENSLO):")
+                st.dataframe(normalized_matrix)
+
+                # Calculate WENSLO weights
+                weights = calculate_wenslo_weights(normalized_matrix)
+                st.subheader("Criterion Weights (WENSLO):")
+                weights_df = pd.DataFrame(weights, index=['Weight']).T
+                st.dataframe(weights_df)
+
+                # Set lambda value
+                lambda_value = st.slider("Lambda Value", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+
+                # Calculate rankings
+                rankings = calculate_wenslo_waspas_rankings(payoff_matrix, criterion_types, lambda_value)
+                st.subheader("Rankings:")
+                rankings_df = pd.DataFrame(rankings, columns=['Alternative', 'Score'])
+                st.dataframe(rankings_df)
+
+                # Plot the rankings
+                fig = px.bar(
+                    rankings_df,
+                    x='Alternative',
+                    y='Score',
+                    title='Final Rankings of Alternatives',
+                    labels={'Score': 'WENSLO-WASPAS Score'}
+                )
+                fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='WENSLO-WASPAS Score')
+                st.plotly_chart(fig)
+
+            elif choice == "Method Comparison":
+                # Calculate rankings for all methods
+                rankings = {}
+                
+                # MPSI-MARA
+                normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
+                variables_df = calculate_variables(normalized_matrix)
+                new_matrix = calculate_new_matrix(normalized_matrix, variables_df['w'])
+                set_Sj = create_set_Sj(new_matrix)
+                set_Smax, set_Smin = split_sets_Smax_Smin(criterion_types, set_Sj)
+                set_Tmax, set_Tmin = create_set_Tmax_Tmin(new_matrix, criterion_types)
+                T_ik, T_il = calculate_T_ik_T_il(set_Tmax, set_Tmin)
+                Sk = sum(set_Smax.values())
+                Sl = sum(set_Smin.values())
+                f_opt = optimal_alternative_function(Sk, Sl)
+                alternative_functions = {alt: alternative_function(T_ik[alt], T_il[alt]) for alt in T_ik.keys()}
+                def_opt_integral = calculate_definite_integral(f_opt, 0, 1)
+                def_integrals = {alt: calculate_definite_integral(func, 0, 1) for alt, func in alternative_functions.items()}
+                mpsi_mara_scores = [def_integrals[alt] for alt in sorted(def_integrals.keys())]
+                rankings['MPSI-MARA'] = rank_alternatives(mpsi_mara_scores)
+
+                # MPSI-ARLON
+                normalized_matrix_arlon = arlon_normalize(payoff_matrix, criterion_types)
+                weights = calculate_arlon_weights(normalized_matrix_arlon)
+                arlon_rankings = calculate_arlon_rankings(normalized_matrix_arlon, weights)
+                rankings['MPSI-ARLON'] = arlon_rankings
+
+                # LOPCOW-DOBI
+                normalized_matrix_lopcow = lopcow_normalize(payoff_matrix, criterion_types)
+                weights_lopcow = calculate_lopcow_weights(normalized_matrix_lopcow)
+                normalized_matrix_dobi = dobi_normalize(payoff_matrix, criterion_types)
+                f_dhat_matrix = f_dhat(normalized_matrix_dobi)
+                Z_L1_values = Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, 0.8, 0.2, 2.0)
+                Z_L2_values = Z_i_2_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, 0.8, 0.2, 2.0)
+                integrated_dobi_scores = dobi_R_i(Z_L1_values, Z_L2_values, 1.0)
+                rankings['LOPCOW-DOBI'] = dobi_rank_alternatives(integrated_dobi_scores)
+
+                # SWARA-MOORA-3NAG
+                normalized_matrix_swara = swara_normalize(payoff_matrix, criterion_types)
+                weights_swara = calculate_swara_weights(normalized_matrix_swara)
+                normalized_matrix_moora = moora_normalize(payoff_matrix)
+                moora_scores = calculate_moora_scores(normalized_matrix_moora, weights_swara, criterion_types)
+                nag_scores = calculate_3nag_scores(moora_scores, normalized_matrix_moora, weights_swara, criterion_types)
+                rankings['SWARA-MOORA-3NAG'] = rank_alternatives(nag_scores)
+
+                # CRITIC-MOORA-3N
+                normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
+                weights_critic = calculate_critic_weights(normalized_matrix_critic)
+                moora_scores = calculate_critic_moora_scores(normalized_matrix_critic, weights_critic, criterion_types)
+                nag_scores = calculate_3n_scores(moora_scores, normalized_matrix_critic, weights_critic, criterion_types)
+                rankings['CRITIC-MOORA-3N'] = rank_alternatives(nag_scores)
+
+                # CRITIC-GRA-3N
+                weights_critic_gra = calculate_critic_gra_3n_weights(normalized_matrix_critic)
+                grey_coefficients = calculate_grey_coefficient(normalized_matrix_critic, weights_critic_gra, criterion_types)
+                nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
+                rankings['CRITIC-GRA-3N'] = rank_alternatives(nag_scores)
+
+                # MPSI-WASPAS
+                normalized_matrix = mpsi_waspas_normalize(payoff_matrix, criterion_types)
+                weights = calculate_mpsi_waspas_weights(normalized_matrix)
+                waspas_rankings = calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value=0.5)
+                rankings['MPSI-WASPAS'] = waspas_rankings
+
+                # WENSLO-MARA
+                normalized_matrix = wenslo_normalize(payoff_matrix, criterion_types)
+                weights = calculate_wenslo_weights(normalized_matrix)
+                wenslo_mara_rankings = calculate_wenslo_mara_rankings(payoff_matrix, criterion_types)
+                rankings['WENSLO-MARA'] = pd.DataFrame(wenslo_mara_rankings, columns=['Alternative', 'Score'])
+
+                # WENSLO-ARLON
+                wenslo_arlon_rankings = calculate_wenslo_arlon_rankings(payoff_matrix, criterion_types)
+                rankings['WENSLO-ARLON'] = pd.DataFrame(wenslo_arlon_rankings, columns=['Alternative', 'Score'])
+
+                # WENSLO-WASPAS
+                wenslo_waspas_rankings = calculate_wenslo_waspas_rankings(payoff_matrix, criterion_types, lambda_val=0.5)
+                rankings['WENSLO-WASPAS'] = pd.DataFrame(wenslo_waspas_rankings, columns=['Alternative', 'Score'])
+
+                # Create comparison table
+                comparison_data = {}
+                for method, ranking_df in rankings.items():
+                    alternatives = []
+                    if isinstance(ranking_df, pd.DataFrame):
+                        for _, row in ranking_df.iterrows():
+                            alternatives.append(row['Alternative'])
+                    else:
+                        sorted_scores = sorted(zip(ranking_df['Score'], range(len(ranking_df))), reverse=True)
+                        alternatives = [f'A{i+1}' for _, i in sorted_scores]
+                    comparison_data[method] = alternatives
+
+                # Create DataFrame with rankings as index
+                comparison_df = pd.DataFrame(comparison_data)
+                comparison_df.index = [f"{i+1}º" for i in range(len(comparison_df))]
+                comparison_df.index.name = "Ranking"
+
+                st.subheader("Method Comparison")
+                st.dataframe(comparison_df)
+
+                # Add method selection
+                available_methods = list(rankings.keys())
+                selected_methods = st.multiselect(
+                    "Select methods to compare:",
+                    available_methods,
+                    default=available_methods[:4]  # Default to first 4 methods
+                )
+
+                # Filter rankings based on selected methods
+                filtered_rankings = {method: rankings[method] for method in selected_methods}
+
+                # Create visualization using the create_comparison_graph function
+                if filtered_rankings:
+                    fig = create_comparison_graph(filtered_rankings)
+                    st.plotly_chart(fig)
+                else:
+                    st.warning("Please select at least one method to display the comparison graph.")
+
+                # Calculate correlation matrix
+                correlation_data = []
+                for method1 in rankings.keys():
+                    row = {"Method": method1}
+                    for method2 in rankings.keys():
+                        if method1 != method2:
+                            if isinstance(rankings[method1], pd.DataFrame):
+                                scores1 = rankings[method1]['Score'].values if 'Score' in rankings[method1].columns else rankings[method1]['Integrated Value'].values
+                            else:
+                                scores1 = rankings[method1]['Score']
+                            
+                            if isinstance(rankings[method2], pd.DataFrame):
+                                scores2 = rankings[method2]['Score'].values if 'Score' in rankings[method2].columns else rankings[method2]['Integrated Value'].values
+                            else:
+                                scores2 = rankings[method2]['Score']
+                            
+                            correlation = np.corrcoef(scores1, scores2)[0, 1]
+                            row[method2] = correlation
+                    correlation_data.append(row)
+
+                correlation_df = pd.DataFrame(correlation_data)
+                st.subheader("Method Correlation Matrix")
+                st.dataframe(correlation_df)
+
+                # Create correlation heatmap
+                fig = px.imshow(correlation_df.set_index("Method"),
+                               title="Method Correlation Heatmap",
+                               color_continuous_scale="RdBu")
+                st.plotly_chart(fig)
+
+                # Generate PDF report
+                if st.button("Generate PDF Report"):
+                    pdf_bytes = generate_pdf_report(payoff_matrix, criterion_types, rankings, correlation_df)
+                    st.download_button(
+                        label="Download PDF Report",
+                        data=pdf_bytes,
+                        file_name="method_comparison_report.pdf",
+                        mime="application/pdf"
+                    )
         else:
             st.info("Please input your data using either manual input or by uploading an Excel file to see the results.")
 
-    elif choice == "Method Comparison":
-        st.title("Method Comparison")
-        st.write("This section compares the rankings obtained from all methods using the same input data.")
+    else:  # About
+        st.title("About")
+        st.write("""
+        This application implements various Multi-Criteria Decision Analysis (MCDA) methods:
         
-        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
+        1. PSI (Preference Selection Index)
+        2. MPSI-MARA (Modified PSI with MARA)
+        3. MPSI-ARLON (Modified PSI with ARLON)
+        4. LOPCOW-DOBI (Logarithmic Percentage Change-driven Objective Weighting with DOBI)
+        5. SWARA-MOORA-3NAG (Step-wise Weight Assessment Ratio Analysis with MOORA and 3NAG)
+        6. CRITIC-MOORA-3N (Criteria Importance Through Intercriteria Correlation with MOORA and 3N)
+        7. CRITIC-GRA-3N (Criteria Importance Through Intercriteria Correlation with GRA and 3N)
+        8. MPSI-WASPAS (Modified PSI with WASPAS)
+        9. WENSLO-MARA (Weighted Entropy-based Slope with MARA)
+        10. WENSLO-ARLON (Weighted Entropy-based Slope with ARLON)
+        11. WENSLO-WASPAS (Weighted Entropy-based Slope with WASPAS)
         
-        # Initialize variables
-        payoff_matrix = None
-        criterion_types = None
-        
-        if data_source == "Upload Excel":
-            st.write("Download the template to fill out the data:")
-            download_template()
-            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-            if uploaded_file:
-                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
-                st.dataframe(payoff_matrix)
-        else:
-            payoff_matrix, criterion_types = get_payoff_matrix()
-        
-        # Only proceed if we have valid data
-        if payoff_matrix is not None and criterion_types is not None:
-            # Calculate rankings for all methods
-            with st.spinner('Calculating rankings for all methods...'):
-                rankings = get_all_method_rankings(payoff_matrix, criterion_types)
-            
-            # Create method selection widget
-            available_methods = list(rankings.keys())
-            selected_methods = st.multiselect(
-                "Select methods to compare:",
-                options=available_methods,
-                default=available_methods,
-                help="Choose which methods you want to display in the comparison graph"
-            )
-            
-            if selected_methods:
-                # Filter rankings to include only selected methods
-                filtered_rankings = {method: rankings[method] for method in selected_methods}
-                
-                # Create and display the comparison graph
-                st.subheader("Ranking Comparison Graph")
-                fig = create_comparison_graph(filtered_rankings)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Display a summary table of rankings
-                st.subheader("Ranking Summary Table")
-                
-                # Get the maximum number of alternatives across selected methods
-                max_alternatives = max(len(ranking_df) for ranking_df in filtered_rankings.values())
-                
-                # Create a dictionary with padded lists to ensure equal length
-                summary_data = {}
-                for method, ranking_df in filtered_rankings.items():
-                    # Get the list of alternatives
-                    alternatives = ranking_df['Alternative'].tolist()
-                    # Pad the list with empty strings if necessary
-                    if len(alternatives) < max_alternatives:
-                        alternatives.extend([''] * (max_alternatives - len(alternatives)))
-                    summary_data[method] = alternatives
-                
-                # Create DataFrame with the padded data
-                summary_df = pd.DataFrame(summary_data)
-                
-                # Add a rank column
-                summary_df.insert(0, 'Rank', range(1, max_alternatives + 1))
-                
-                # Display the summary table
-                st.dataframe(summary_df)
-            else:
-                st.warning("Please select at least one method to compare.")
-        else:
-            st.info("Please input your data using either manual input or by uploading an Excel file to see the comparison.")
-
-    else:
-        st.subheader("About")
-        st.write("MEGA-MCDA is a comprehensive calculator that implements multiple Multicriteria Decision Analysis (MCDA) methods:")
-        st.write("1. PSI Method: https://www.sciencedirect.com/science/article/abs/pii/S0261306909006396?via%3Dihub")
-        st.write("2. MPSI-MARA: https://www.mdpi.com/2079-8954/10/6/248")
-        st.write("3. MPSI-ARLON: https://doi.org/10.1016/j.seps.2024.101822")
-        st.write("4. LOPCOW-DOBI: https://linkinghub.elsevier.com/retrieve/pii/S0305048322000974")
-        st.write("5. SWARA-MOORA-3NAG: https://github.com/mcda-software/SWARA-MOORA-3NAG")
-        st.write("6. CRITIC-MOORA-3N: https://github.com/lorransr/critic-moora-3n-method")
-        st.write("7. CRITIC-GRA-3N: https://github.com/mcda-software/CRITIC-GRA-3N")
-        st.write("8. MPSI-WASPAS: https://github.com/mcda-software/MPSI-WASPAS")
-        st.write("To cite this work:")
-        st.write("Araujo, Tullio Mozart Pires de Castro; Gomes, Carlos Francisco Simões.; Santos, Marcos dos. MEGA-MCDA (v1), Universidade Federal Fluminense, Niterói, Rio de Janeiro, 2024.")
+        For more information about these methods, please visit:
+        - [PSI Method](https://github.com/your-repo/psi)
+        - [MPSI Method](https://github.com/your-repo/mpsi)
+        - [LOPCOW-DOBI Method](https://github.com/your-repo/lopcow-dobi)
+        - [SWARA-MOORA-3NAG Method](https://github.com/your-repo/swara-moora-3nag)
+        - [CRITIC-MOORA-3N Method](https://github.com/your-repo/critic-moora-3n)
+        - [CRITIC-GRA-3N Method](https://github.com/your-repo/critic-gra-3n)
+        - [MPSI-WASPAS Method](https://github.com/your-repo/mpsi-waspas)
+        - [WENSLO Method](https://github.com/your-repo/wenslo)
+        """)
     
     # Add logo to the sidebar
     logo_path = "https://i.imgur.com/g7fITf4.png"  # Replace with the actual path to your logo image file
