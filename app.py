@@ -1075,8 +1075,14 @@ def create_comparison_graph(rankings):
     df_plot = pd.DataFrame(plot_data)
     
     # Sort alternatives in ascending order
-    df_plot['Alternative_Num'] = df_plot['Alternative'].str.extract('(\d+)').astype(int)
-    df_plot = df_plot.sort_values('Alternative_Num')
+    # Coerce non-matching/blank alternatives to NaN to avoid astype errors.
+    df_plot['Alternative_Num'] = (
+        df_plot['Alternative']
+        .astype(str)
+        .str.extract(r'(\d+)', expand=False)
+    )
+    df_plot['Alternative_Num'] = pd.to_numeric(df_plot['Alternative_Num'], errors='coerce')
+    df_plot = df_plot.sort_values(['Alternative_Num', 'Alternative'])
     
     # Create the line plot
     fig = px.line(
