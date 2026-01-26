@@ -1096,6 +1096,13 @@ def create_comparison_graph(rankings):
     )
     
     # Update layout for better visualization
+    categoryarray = (
+        df_plot[['Alternative', 'Alternative_Num']]
+        .drop_duplicates()
+        .sort_values(['Alternative_Num', 'Alternative'])
+        ['Alternative']
+        .tolist()
+    )
     fig.update_layout(
         yaxis=dict(
             title='Ranking Position',
@@ -1107,7 +1114,7 @@ def create_comparison_graph(rankings):
         xaxis=dict(
             title='Alternative',
             categoryorder='array',  # Use custom ordering
-            categoryarray=sorted(df_plot['Alternative'].unique(), key=lambda x: int(x[1:]))  # Sort by number
+            categoryarray=categoryarray
         ),
         showlegend=True,
         legend_title='Method'
