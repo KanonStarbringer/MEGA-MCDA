@@ -126,6 +126,165 @@ def normalize_matrix(df, criterion_types):
             normalized_df.iloc[:, j+1] = col_min / df.iloc[:, j+1]
     return normalized_df
 
+# --- CRITIC-5N-PROVAN helpers ---
+def normalize_matrix_max_min(df, criterion_types):
+    normalized = df.copy()
+    for j, criterion_type in enumerate(criterion_types):
+        col_max = df.iloc[:, j+1].max()
+        col_min = df.iloc[:, j+1].min()
+        if criterion_type == "Benefit":
+            normalized.iloc[:, j+1] = (df.iloc[:, j+1] - col_min) / (col_max - col_min)
+        else:
+            normalized.iloc[:, j+1] = (col_max - df.iloc[:, j+1]) / (col_max - col_min)
+    return normalized
+
+
+def normalize_matrix_linear_sum(df, criterion_types):
+    normalized = df.copy()
+    for j, criterion_type in enumerate(criterion_types):
+        if criterion_type == "Benefit":
+            normalized.iloc[:, j+1] = df.iloc[:, j+1] / sum(df.iloc[:, j+1])
+        else:
+            normalized.iloc[:, j+1] = 1 / df.iloc[:, j+1] / sum(1 / df.iloc[:, j+1])
+    return normalized
+
+
+def normalize_matrix_with_vector(df, criterion_types):
+    normalized = df.copy()
+    for j, criterion_type in enumerate(criterion_types):
+        if criterion_type == "Benefit":
+            normalized.iloc[:, j+1] = df.iloc[:, j+1] / np.sqrt(sum(df.iloc[:, j+1] ** 2))
+        else:
+            normalized.iloc[:, j+1] = 1 - df.iloc[:, j+1] / np.sqrt(sum((1 - df.iloc[:, j+1]) ** 2))
+    return normalized
+
+
+def normalize_matrix_logarithmic(df, criterion_types):
+    """
+    Normalização logarítmica conforme fórmula N4:
+    - Benefit: η_ij(4) = (ln x_ij) / (ln (Π x_ij))
+    - Cost: η_ij(4) = (1 / (m-1)) * (1 - (ln x_ij) / (ln (Π x_ij)))
+    """
+    normalized = df.copy()
+    m = int(df.shape[0])
+    if m < 2:
+        raise ValueError("É necessário pelo menos 2 alternativas para a normalização logarítmica.")
+    for j, criterion_type in enumerate(criterion_types):
+        col_values = df.iloc[:, j+1].values.astype(float)
+        if np.any(col_values <= 0) or np.any(np.isnan(col_values)):
+            raise ValueError(
+                f"Coluna C{j+1} contém valores zero, negativos ou NaN. "
+                "A normalização logarítmica requer valores positivos."
+            )
+        log_values = np.log(col_values)
+        log_product = float(np.sum(log_values))
+        if abs(log_product) < 1e-10:
+            raise ValueError(
+                f"Coluna C{j+1}: log do produtório é muito próximo de zero, causando divisão por zero."
+            )
+        if criterion_type == "Benefit":
+            normalized_values = log_values / log_product
+        else:
+            normalized_values = (1.0 / float(m - 1)) * (1.0 - log_values / log_product)
+        normalized_values = np.abs(normalized_values)
+        normalized.iloc[:, j+1] = normalized_values.astype(float)
+    return normalized
+
+
+def normalize_matrix_non_linear(df, criterion_types):
+    normalized = df.copy()
+    for j, criterion_type in enumerate(criterion_types):
+        if criterion_type == "Benefit":
+            normalized.iloc[:, j+1] = (df.iloc[:, j+1] / max(df.iloc[:, j+1])) ** 2
+        else:
+            normalized.iloc[:, j+1] = (min(df.iloc[:, j+1]) / df.iloc[:, j+1]) ** 3
+    return normalized
+
+
+def aczel_alsina_provan_matrix(normalized_matrices, phis=None, xi=1.0, eps=1e-12):
+    if not normalized_matrices:
+        raise ValueError("normalized_matrices must be a non-empty list of DataFrames")
+    K = len(normalized_matrices)
+    base_df = normalized_matrices[0]
+    for mat in normalized_matrices[1:]:
+        if not mat.columns.equals(base_df.columns) or mat.shape != base_df.shape:
+            raise ValueError("All normalized matrices must have the same shape and columns")
+    crit_cols = base_df.columns[1:]
+    X = np.stack(
+        [mat[crit_cols].to_numpy(dtype=float) for mat in normalized_matrices],
+        axis=0
+    )
+    if phis is None:
+        phis_arr = np.ones(K, dtype=float) / K
+    else:
+        phis_arr = np.asarray(phis, dtype=float)
+        if phis_arr.shape != (K,):
+            raise ValueError("phis must have length K (same as normalized_matrices)")
+        s = phis_arr.sum()
+        if s <= 0:
+            raise ValueError("Sum of φ_k must be positive")
+        phis_arr = phis_arr / s
+    if xi <= 0:
+        raise ValueError("xi must be > 0")
+    S = X.sum(axis=0)
+    S_safe = np.where(S > eps, S, 1.0)
+    F = X / S_safe
+    F = np.clip(F, eps, 1.0 - eps)
+    inner = np.sum(
+        phis_arr[:, None, None] * (-np.log(1.0 - F)) ** xi,
+        axis=0
+    )
+    A = 1.0 - np.exp(-inner ** (1.0 / xi))
+    eta = np.where(S > eps, S * A, 0.0)
+    result = base_df.copy()
+    result.loc[:, crit_cols] = eta
+    return result
+
+
+def critic_weights_provan(df):
+    std_dev = df.iloc[:, 1:].std(axis=0)
+    corr_matrix = df.iloc[:, 1:].corr(method="pearson")
+    info_measure = np.zeros(len(std_dev))
+    for j in range(len(std_dev)):
+        sum_corr = np.sum(1 - corr_matrix.iloc[j, :])
+        info_measure[j] = std_dev.iloc[j] * sum_corr
+    weights = info_measure / np.sum(info_measure)
+    return weights
+
+
+def apply_critic_weights_provan(df_agg):
+    weights = critic_weights_provan(df_agg)
+    crit_cols = df_agg.columns[1:]
+    weighted_df = df_agg.copy()
+    weighted_df.loc[:, crit_cols] = df_agg.loc[:, crit_cols] * weights
+    return weights, weighted_df
+
+
+def provan_ranking(df_agg, criterion_types):
+    weights, weighted_df = apply_critic_weights_provan(df_agg)
+    crit_cols = weighted_df.columns[1:]
+    theta = weighted_df.loc[:, crit_cols].to_numpy(dtype=float)
+    benefit_idx = [j for j, t in enumerate(criterion_types) if t == "Benefit"]
+    cost_idx = [j for j, t in enumerate(criterion_types) if t == "Cost"]
+    if benefit_idx:
+        U_plus = theta[:, benefit_idx].sum(axis=1)
+    else:
+        U_plus = np.zeros(theta.shape[0])
+    if cost_idx:
+        U_minus = theta[:, cost_idx].sum(axis=1)
+    else:
+        U_minus = np.zeros(theta.shape[0])
+    Score = (2.0 + U_plus) / (2.0 + U_minus)
+    result = pd.DataFrame({
+        "A/C": weighted_df["A/C"],
+        "U_plus": U_plus,
+        "U_minus": U_minus,
+        "Score": Score
+    })
+    result["Rank"] = result["Score"].rank(ascending=False, method="dense").astype(int)
+    result = result.sort_values(by="Score", ascending=False).reset_index(drop=True)
+    return result, weights, weighted_df
+
 def calculate_v_ij(normalized_df):
     v_values = normalized_df.iloc[:, 1:].mean()
     return v_values
@@ -1044,6 +1203,19 @@ def get_all_method_rankings(payoff_matrix, criterion_types):
     nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
     rankings['CRITIC-GRA-3N'] = rank_alternatives(nag_scores)
     
+    # CRITIC-5N-PROVAN Method
+    N1 = normalize_matrix_max_min(payoff_matrix, criterion_types)
+    N2 = normalize_matrix_linear_sum(payoff_matrix, criterion_types)
+    N3 = normalize_matrix_with_vector(payoff_matrix, criterion_types)
+    N4 = normalize_matrix_logarithmic(payoff_matrix, criterion_types)
+    N5 = normalize_matrix_non_linear(payoff_matrix, criterion_types)
+    normalized_mats = [N1, N2, N3, N4, N5]
+    phis = [1 / len(normalized_mats)] * len(normalized_mats)
+    eta_agg_df = aczel_alsina_provan_matrix(normalized_mats, phis=phis, xi=3.0)
+    result_ranking, _, _ = provan_ranking(eta_agg_df, criterion_types)
+    provan_ranking_df = result_ranking[['A/C', 'Score']].rename(columns={'A/C': 'Alternative'})
+    rankings['CRITIC-5N-PROVAN'] = provan_ranking_df
+
     # MPSI-WASPAS Method
     normalized_matrix = mpsi_waspas_normalize(payoff_matrix, criterion_types)
     weights = calculate_mpsi_waspas_weights(normalized_matrix)
@@ -1329,7 +1501,7 @@ def smaa_analysis(payoff_matrix: pd.DataFrame, criterion_types: list, num_simula
     return rank_df, win_df, cwv_df
 
 def main():
-    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "MPSI-WASPAS", "Method Comparison", "About"]
+    menu = ["Home", "PSI", "MPSI-MARA", "MPSI-ARLON", "LOPCOW-DOBI", "SWARA-MOORA-3NAG", "CRITIC-MOORA-3N", "CRITIC-GRA-3N", "CRITIC-5N-PROVAN", "MPSI-WASPAS", "Method Comparison", "About"]
 
     choice = st.sidebar.selectbox("Menu", menu)
 
@@ -1345,7 +1517,8 @@ def main():
         st.write("5. SWARA-MOORA-3NAG - A hybrid method combining SWARA, MOORA, and 3NAG for advanced decision analysis")
         st.write("6. CRITIC-MOORA-3N - A hybrid method combining CRITIC, MOORA, and 3N for objective decision analysis")
         st.write("7. CRITIC-GRA-3N - A hybrid method combining CRITIC, GRA, and 3N for objective decision analysis")
-        st.write("8. MPSI-WASPAS - A hybrid method combining MPSI and WASPAS for multi-criteria decision analysis")
+        st.write("8. CRITIC-5N-PROVAN - A hybrid method combining CRITIC with the 5N-PROVAN aggregation")
+        st.write("9. MPSI-WASPAS - A hybrid method combining MPSI and WASPAS for multi-criteria decision analysis")
         st.write("To use this Calculator:")
         st.write("1. Select the desired method from the sidebar menu")
         st.write("2. Choose between manual input or uploading an Excel file")
@@ -1714,6 +1887,53 @@ def main():
         )
         fig.update_layout(xaxis_title_text='Alternative', yaxis_title_text='3N Score')
         st.plotly_chart(fig)
+
+    elif choice == "CRITIC-5N-PROVAN":
+        st.title("CRITIC-5N-PROVAN Method MCDA Calculator")
+        data_source = st.radio("How would you like to input data?", ["Manual Input", "Upload Excel"])
+
+        payoff_matrix = None
+        criterion_types = None
+
+        if data_source == "Upload Excel":
+            st.write("Download the template to fill out the data:")
+            download_template()
+            uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+            if uploaded_file:
+                payoff_matrix, criterion_types, num_alternatives, num_criteria = read_excel(uploaded_file)
+                st.dataframe(payoff_matrix)
+        else:
+            payoff_matrix, criterion_types = get_payoff_matrix()
+
+        if payoff_matrix is not None and criterion_types is not None:
+            xi_param = st.number_input("Xi (ξ) parameter", min_value=0.1, value=3.0, step=0.1)
+            try:
+                with st.spinner("Calculating CRITIC-5N-PROVAN..."):
+                    N1 = normalize_matrix_max_min(payoff_matrix, criterion_types)
+                    N2 = normalize_matrix_linear_sum(payoff_matrix, criterion_types)
+                    N3 = normalize_matrix_with_vector(payoff_matrix, criterion_types)
+                    N4 = normalize_matrix_logarithmic(payoff_matrix, criterion_types)
+                    N5 = normalize_matrix_non_linear(payoff_matrix, criterion_types)
+                    normalized_mats = [N1, N2, N3, N4, N5]
+                    phis = [1 / len(normalized_mats)] * len(normalized_mats)
+                    eta_agg_df = aczel_alsina_provan_matrix(normalized_mats, phis=phis, xi=xi_param)
+                    result_ranking, w_critic, theta_df = provan_ranking(eta_agg_df, criterion_types)
+
+                st.subheader("Aggregated Matrix (η_ij)")
+                st.dataframe(eta_agg_df)
+
+                st.subheader("CRITIC Weights (w_j)")
+                st.dataframe(pd.DataFrame(w_critic, columns=["Weight"]).transpose())
+
+                st.subheader("Weighted Matrix (ϑ_ij)")
+                st.dataframe(theta_df)
+
+                st.subheader("PROVAN Ranking")
+                st.dataframe(result_ranking)
+            except ValueError as e:
+                st.error(str(e))
+        else:
+            st.info("Please input your data using either manual input or by uploading an Excel file to see the results.")
 
     elif choice == "MPSI-WASPAS":
         st.title("MPSI-WASPAS Method MCDA Calculator")
