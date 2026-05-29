@@ -63,6 +63,22 @@ def download_template():
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
+def prepare_payoff_matrix(df):
+    """
+    Garante nomes de alternativas na coluna A/C e colunas de critérios numéricas (float).
+    Evita TypeError ao normalizar DataFrames lidos como object pelo Excel/AgGrid.
+    """
+    prepared = df.copy()
+    prepared.columns = ['A/C'] + [f'C{i+1}' for i in range(len(prepared.columns) - 1)]
+    prepared['A/C'] = prepared['A/C'].astype(str).str.strip()
+    prepared = prepared[prepared['A/C'].ne('') & prepared['A/C'].str.lower().ne('nan')]
+
+    for col in prepared.columns[1:]:
+        prepared[col] = pd.to_numeric(prepared[col], errors='coerce').astype(float)
+
+    return prepared.reset_index(drop=True)
+
+
 # Function to read Excel file
 def read_excel(uploaded_file):
     df = pd.read_excel(uploaded_file)
@@ -85,11 +101,8 @@ def read_excel(uploaded_file):
     columns = ['A/C'] + [f'C{i+1}' for i in range(num_criteria)]
     df.columns = columns
 
-    # Convert all the criteria columns (except the 'A/C' column) to numeric values
-    for col in df.columns[1:]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    return df, criterion_types, df.shape[0], num_criteria
+    df = prepare_payoff_matrix(df)
+    return df, criterion_types, df.shape[0], len(df.columns) - 1
 
 def get_payoff_matrix():
     num_alternatives = st.number_input("Enter the number of alternatives:", min_value=2, value=2, step=1)
@@ -113,17 +126,26 @@ def get_payoff_matrix():
         criterion_type = st.selectbox(f"{criterion_label} - Benefit or Cost?", ["Benefit", "Cost"])
         criterion_types.append(criterion_type)
 
-    return edited_matrix, criterion_types
+    return prepare_payoff_matrix(edited_matrix), criterion_types
+
 
 def normalize_matrix(df, criterion_types):
-    normalized_df = df.copy()
+    prepared = prepare_payoff_matrix(df)
+    normalized_df = prepared.copy()
     for j, criterion_type in enumerate(criterion_types):
+        col = normalized_df.columns[j + 1]
+        values = normalized_df[col].to_numpy(dtype=float)
         if criterion_type == "Benefit":
-            col_max = df.iloc[:, j+1].max()
-            normalized_df.iloc[:, j+1] = df.iloc[:, j+1] / col_max
+            col_max = np.nanmax(values)
+            if not np.isfinite(col_max) or col_max == 0:
+                col_max = 1e-10
+            normalized_df[col] = values / col_max
         else:
-            col_min = df.iloc[:, j+1].min()
-            normalized_df.iloc[:, j+1] = col_min / df.iloc[:, j+1]
+            col_min = np.nanmin(values)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                normalized = col_min / values
+            normalized = np.where(np.isfinite(normalized), normalized, 0.0)
+            normalized_df[col] = normalized
     return normalized_df
 
 # --- CRITIC-5N-PROVAN helpers ---
@@ -639,7 +661,7 @@ def dobi_integrated_value(Z_L1_values, Z_L2_values, delta):
         integrated_values.append(R_i)
     return integrated_values
 
-def dobi_rank_alternatives(integrated_values):
+def dobi_rank_alternatives(integrated_values, alternatives=None):
     """
     Rank alternatives based on their integrated values using the DOBI method.
     
@@ -649,8 +671,11 @@ def dobi_rank_alternatives(integrated_values):
     Returns:
     - A DataFrame with alternatives and their rankings.
     """
+    if alternatives is None:
+        alternatives = ['A' + str(i+1) for i in range(len(integrated_values))]
+
     rankings_df = pd.DataFrame({
-        'Alternative': ['A' + str(i+1) for i in range(len(integrated_values))],
+        'Alternative': list(alternatives),
         'Integrated Value': integrated_values
     })
     
@@ -672,25 +697,51 @@ def f_dhat(d_hat_matrix):
     """
     # Convert to numeric values, replacing any non-numeric values with 0
     numeric_matrix = d_hat_matrix.iloc[:, 1:].apply(pd.to_numeric, errors='coerce').fillna(0)
-    
-    # Create a new DataFrame for f_dhat values
-    f_dhat_matrix = pd.DataFrame(index=numeric_matrix.index, columns=numeric_matrix.index)
-    
-    # Loop through each row (i.e., each alternative) to calculate f(d_hat)
-    for i in range(len(numeric_matrix)):
+    num_alternatives = numeric_matrix.shape[0]
+    num_criteria = numeric_matrix.shape[1]
+
+    # Keep the same shape as the criteria matrix (alternatives x criteria).
+    f_dhat_matrix = pd.DataFrame(
+        0.0,
+        index=numeric_matrix.index,
+        columns=numeric_matrix.columns
+    )
+
+    # Normalize each row by its own sum.
+    for i in range(num_alternatives):
         row_sum = numeric_matrix.iloc[i].sum()
-        
         if row_sum == 0:
             row_sum = 1e-10  # Avoid division by zero
-        
-        # Calculate f(d_hat) for each pair of alternatives
-        for j in range(len(numeric_matrix)):
-            if i != j:  # Avoid self-reference
-                f_dhat_matrix.iloc[i, j] = numeric_matrix.iloc[i, j] / row_sum
-            else:
-                f_dhat_matrix.iloc[i, j] = 0  # Set diagonal to 0
-    
+
+        for j in range(num_criteria):
+            f_dhat_matrix.iloc[i, j] = numeric_matrix.iloc[i, j] / row_sum
+
     return f_dhat_matrix
+
+
+def _dobi_alternative_weights(normalized_matrix_dobi, criteria_weights):
+    """
+    Build a stable per-alternative weight from criterion weights.
+    """
+    criteria_values = normalized_matrix_dobi.iloc[:, 1:].apply(pd.to_numeric, errors='coerce').fillna(0.0)
+    num_criteria = criteria_values.shape[1]
+
+    weights = np.asarray(criteria_weights, dtype=float)
+    if len(weights) < num_criteria:
+        missing = num_criteria - len(weights)
+        weights = np.concatenate([weights, np.full(missing, 1.0 / num_criteria)])
+    elif len(weights) > num_criteria:
+        weights = weights[:num_criteria]
+
+    weight_sum = weights.sum()
+    if weight_sum == 0:
+        weights = np.full(num_criteria, 1.0 / num_criteria)
+    else:
+        weights = weights / weight_sum
+
+    alt_weights = criteria_values.to_numpy().dot(weights)
+    alt_weights = np.where(alt_weights <= 0, 1e-10, alt_weights)
+    return alt_weights, weights
 
 # Calculate Z_i^(1) for DOBI method
 
@@ -701,6 +752,7 @@ def Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights, psi1, psi2, zeta):
     num_alternatives = normalized_matrix_dobi.shape[0]
     num_criteria = normalized_matrix_dobi.shape[1] - 1  # Exclude 'A/C' column
 
+    alt_weights, criterion_weights = _dobi_alternative_weights(normalized_matrix_dobi, weights)
     Z_L1_values = []
 
     # Loop through each alternative
@@ -711,25 +763,22 @@ def Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights, psi1, psi2, zeta):
 
         # Step 2: Calculate the complex denominator
         inner_sum = 0
-        for j in range(num_alternatives):
-            if j != i:  # Avoid self-reference
-                # Get the f_dhat value for the current pair of alternatives
-                f_dhat_ij = float(f_dhat_matrix.iloc[i, j])  # Ensure numeric value
+        for j in range(num_criteria):
+            f_dhat_ij = float(f_dhat_matrix.iloc[i, j])  # Ensure numeric value
 
-                # Skip if f_dhat_ij is 0 to avoid division by zero
-                if f_dhat_ij == 0:
-                    continue
+            # Keep f_dhat in (0, 1) to avoid unstable terms.
+            if f_dhat_ij <= 0 or f_dhat_ij >= 1:
+                continue
 
-                # Pairwise comparison between criteria based on weights
-                term1 = 1 / (weights[i] * weights[j] * (psi1 + psi2))
-                term2 = (psi1 * ((1 - f_dhat_ij) / f_dhat_ij)) ** zeta
-                term3 = psi2 * (f_dhat_ij / (1 - f_dhat_ij)) ** zeta
+            term1 = 1 / (alt_weights[i] * criterion_weights[j] * (psi1 + psi2))
+            term2 = (psi1 * ((1 - f_dhat_ij) / f_dhat_ij)) ** zeta
+            term3 = psi2 * (f_dhat_ij / (1 - f_dhat_ij)) ** zeta
 
-                # Add up these terms for the inner sum
-                inner_sum += term1 * (term2 + term3)
+            # Add up these terms for the inner sum
+            inner_sum += term1 * (term2 + term3)
 
         # Step 3: Final denominator calculation
-        denom = 1 + (1 / (weights[i] * (psi1 + psi2))) * inner_sum
+        denom = 1 + (1 / (alt_weights[i] * (psi1 + psi2))) * inner_sum
         denom = denom ** (1 / zeta)
 
         # Step 4: Z_L1 Calculation
@@ -744,34 +793,34 @@ def Z_i_2_v2(normalized_matrix_dobi, f_dhat_matrix, weights, psi1, psi2, zeta):
     """
     num_alternatives = normalized_matrix_dobi.shape[0]
     num_criteria = normalized_matrix_dobi.shape[1] - 1  # Exclude 'A/C' column
+    alt_weights, criterion_weights = _dobi_alternative_weights(normalized_matrix_dobi, weights)
     Z_L2_values = []
+    z_l1_values = Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights, psi1, psi2, zeta)
 
     for i in range(num_alternatives):
         # Numerator: Sum of the row (sum of the normalized values for alternative i)
         row_sum = np.sum(normalized_matrix_dobi.iloc[i, 1:].apply(pd.to_numeric, errors='coerce').fillna(0))
 
         # Subtract the value of Z_L1 from the row sum for the current alternative
-        Z_L1_value = Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights, psi1, psi2, zeta)[i]
+        Z_L1_value = z_l1_values[i]
         adjusted_sum = row_sum - Z_L1_value
 
         # Initialize the denominator
         inner_sum = 0
-        for j in range(num_alternatives):
-            if j != i:  # Avoid self-reference
-                f_dhat_ij = float(f_dhat_matrix.iloc[i, j])  # Ensure numeric value
+        for j in range(num_criteria):
+            f_dhat_ij = float(f_dhat_matrix.iloc[i, j])  # Ensure numeric value
 
-                # Skip if f_dhat_ij is 0 to avoid division by zero
-                if f_dhat_ij == 0:
-                    continue
+            # Keep f_dhat in (0, 1) to avoid unstable terms.
+            if f_dhat_ij <= 0 or f_dhat_ij >= 1:
+                continue
 
-                # Pairwise comparison logic for alternative i and criteria j
-                term1 = 1 / (weights[i] * weights[j] * (psi1 + psi2))
-                term2 = (psi1 * (1 - f_dhat_ij) / f_dhat_ij) ** zeta
-                term3 = psi2 * (f_dhat_ij / (1 - f_dhat_ij)) ** zeta
-                inner_sum += term1 * (term2 + term3)
+            term1 = 1 / (alt_weights[i] * criterion_weights[j] * (psi1 + psi2))
+            term2 = (psi1 * (1 - f_dhat_ij) / f_dhat_ij) ** zeta
+            term3 = psi2 * (f_dhat_ij / (1 - f_dhat_ij)) ** zeta
+            inner_sum += term1 * (term2 + term3)
 
         # Calculate final denominator for Z_L2
-        denominator = 1 + (1 / (weights[i] * (psi1 + psi2))) * inner_sum
+        denominator = 1 + (1 / (alt_weights[i] * (psi1 + psi2))) * inner_sum
         denominator = denominator ** (1 / zeta)
 
         Z_L2 = adjusted_sum / denominator
@@ -920,7 +969,7 @@ def calculate_3nag_scores(moora_scores, normalized_matrix, weights, criterion_ty
     
     return scores
 
-def rank_alternatives(scores):
+def rank_alternatives(scores, alternatives=None):
     """
     Rank alternatives based on their scores.
     
@@ -930,8 +979,19 @@ def rank_alternatives(scores):
     Returns:
     - DataFrame with alternatives and their rankings
     """
+    scores = np.asarray(scores).reshape(-1)
+    if alternatives is None:
+        alternatives = [f'A{i+1}' for i in range(len(scores))]
+    else:
+        alternatives = list(alternatives)
+        if len(alternatives) != len(scores):
+            # Keep both arrays aligned even if the input table has blank/extra labels.
+            min_len = min(len(alternatives), len(scores))
+            alternatives = alternatives[:min_len]
+            scores = scores[:min_len]
+
     rankings = pd.DataFrame({
-        'Alternative': [f'A{i+1}' for i in range(len(scores))],
+        'Alternative': alternatives,
         'Score': scores
     })
     
@@ -1140,13 +1200,16 @@ def get_all_method_rankings(payoff_matrix, criterion_types):
     Returns:
     - Dictionary containing rankings for each method
     """
+    payoff_matrix = prepare_payoff_matrix(payoff_matrix)
     rankings = {}
+    alternatives = payoff_matrix['A/C'].astype(str).tolist()
     
     # PSI Method
     normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
     PSI_variables_df = calculate_PSI_variables(normalized_matrix)
-    psi_scores = PSI_variables_df['psi'].values
-    rankings['PSI'] = rank_alternatives(psi_scores)
+    psi_weights = PSI_variables_df['psi'].to_numpy(dtype=float)
+    psi_scores = normalized_matrix.iloc[:, 1:].to_numpy(dtype=float).dot(psi_weights)
+    rankings['PSI'] = rank_alternatives(psi_scores, alternatives=alternatives)
     
     # MPSI-MARA Method
     normalized_matrix = normalize_matrix(payoff_matrix, criterion_types)
@@ -1162,8 +1225,8 @@ def get_all_method_rankings(payoff_matrix, criterion_types):
     alternative_functions = {alt: alternative_function(T_ik[alt], T_il[alt]) for alt in T_ik.keys()}
     def_opt_integral = calculate_definite_integral(f_opt, 0, 1)
     def_integrals = {alt: calculate_definite_integral(func, 0, 1) for alt, func in alternative_functions.items()}
-    mpsi_mara_scores = [def_integrals[alt] for alt in sorted(def_integrals.keys())]
-    rankings['MPSI-MARA'] = rank_alternatives(mpsi_mara_scores)
+    mpsi_mara_scores = [def_integrals.get(alt, np.nan) for alt in alternatives]
+    rankings['MPSI-MARA'] = rank_alternatives(mpsi_mara_scores, alternatives=alternatives)
     
     # MPSI-ARLON Method
     normalized_matrix_arlon = arlon_normalize(payoff_matrix, criterion_types)
@@ -1179,7 +1242,7 @@ def get_all_method_rankings(payoff_matrix, criterion_types):
     Z_L1_values = Z_i_1_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, 0.8, 0.2, 2.0)
     Z_L2_values = Z_i_2_v2(normalized_matrix_dobi, f_dhat_matrix, weights_lopcow, 0.8, 0.2, 2.0)
     integrated_dobi_scores = dobi_R_i(Z_L1_values, Z_L2_values, 1.0)
-    rankings['LOPCOW-DOBI'] = dobi_rank_alternatives(integrated_dobi_scores)
+    rankings['LOPCOW-DOBI'] = dobi_rank_alternatives(integrated_dobi_scores, alternatives=alternatives)
     
     # SWARA-MOORA-3NAG Method
     normalized_matrix_swara = swara_normalize(payoff_matrix, criterion_types)
@@ -1187,21 +1250,21 @@ def get_all_method_rankings(payoff_matrix, criterion_types):
     normalized_matrix_moora = moora_normalize(payoff_matrix)
     moora_scores = calculate_moora_scores(normalized_matrix_moora, weights_swara, criterion_types)
     nag_scores = calculate_3nag_scores(moora_scores, normalized_matrix_moora, weights_swara, criterion_types)
-    rankings['SWARA-MOORA-3NAG'] = rank_alternatives(nag_scores)
+    rankings['SWARA-MOORA-3NAG'] = rank_alternatives(nag_scores, alternatives=alternatives)
     
     # CRITIC-MOORA-3N Method
     normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
     weights_critic = calculate_critic_weights(normalized_matrix_critic)
     moora_scores = calculate_critic_moora_scores(normalized_matrix_critic, weights_critic, criterion_types)
     nag_scores = calculate_3n_scores(moora_scores, normalized_matrix_critic, weights_critic, criterion_types)
-    rankings['CRITIC-MOORA-3N'] = rank_alternatives(nag_scores)
+    rankings['CRITIC-MOORA-3N'] = rank_alternatives(nag_scores, alternatives=alternatives)
     
     # CRITIC-GRA-3N Method
     normalized_matrix_critic = critic_normalize(payoff_matrix, criterion_types)
     weights_critic_gra = calculate_critic_gra_3n_weights(normalized_matrix_critic)
     grey_coefficients = calculate_grey_coefficient(normalized_matrix_critic, weights_critic_gra, criterion_types)
     nag_scores = calculate_3n_grey_scores(grey_coefficients, normalized_matrix_critic, weights_critic_gra, criterion_types)
-    rankings['CRITIC-GRA-3N'] = rank_alternatives(nag_scores)
+    rankings['CRITIC-GRA-3N'] = rank_alternatives(nag_scores, alternatives=alternatives)
     
     # CRITIC-5N-PROVAN Method
     N1 = normalize_matrix_max_min(payoff_matrix, criterion_types)
@@ -1377,7 +1440,7 @@ def calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_
     
     return waspas_scores
 
-def calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value=0.5):
+def calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, lambda_value=0.5, alternatives=None):
     """
     Calculate final rankings using MPSI-WASPAS method.
     
@@ -1392,8 +1455,11 @@ def calculate_mpsi_waspas_rankings(normalized_matrix, weights, criterion_types, 
     """
     scores = calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_value)
     
+    if alternatives is None:
+        alternatives = normalized_matrix['A/C'].astype(str).tolist()
+
     rankings = pd.DataFrame({
-        'Alternative': [f'A{i+1}' for i in range(len(scores))],
+        'Alternative': list(alternatives),
         'Score': scores
     })
     
