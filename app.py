@@ -79,6 +79,18 @@ def prepare_payoff_matrix(df):
     return prepared.reset_index(drop=True)
 
 
+def as_weight_array(weights):
+    """Converte pesos para array 1D posicional (compatível com pandas 3.x)."""
+    if isinstance(weights, pd.Series):
+        return weights.to_numpy(dtype=float).reshape(-1)
+    return np.asarray(weights, dtype=float).reshape(-1)
+
+
+def criteria_values(df):
+    """Retorna matriz numérica alternativas x critérios."""
+    return df.iloc[:, 1:].to_numpy(dtype=float)
+
+
 # Function to read Excel file
 def read_excel(uploaded_file):
     df = pd.read_excel(uploaded_file)
@@ -899,9 +911,7 @@ def calculate_swara_weights(normalized_matrix):
     
     # Calculate weights as the proportion of each mean to the total
     total_mean = mean_values.sum()
-    weights = mean_values / total_mean
-    
-    return weights
+    return as_weight_array(mean_values / total_mean)
 
 def moora_normalize(matrix):
     """
@@ -934,14 +944,16 @@ def calculate_moora_scores(normalized_matrix, weights, criterion_types):
     Returns:
     - MOORA scores for each alternative
     """
+    weights = as_weight_array(weights)
+    values = criteria_values(normalized_matrix)
     scores = np.zeros(normalized_matrix.shape[0])
     
     for i in range(normalized_matrix.shape[0]):
         for j, criterion_type in enumerate(criterion_types):
             if criterion_type == "Benefit":
-                scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
+                scores[i] += weights[j] * values[i, j]
             else:  # Cost criterion
-                scores[i] -= weights[j] * normalized_matrix.iloc[i, j+1]
+                scores[i] -= weights[j] * values[i, j]
     
     return scores
 
@@ -958,14 +970,16 @@ def calculate_3nag_scores(moora_scores, normalized_matrix, weights, criterion_ty
     Returns:
     - 3NAG scores for each alternative
     """
+    weights = as_weight_array(weights)
+    values = criteria_values(normalized_matrix)
     scores = np.zeros(normalized_matrix.shape[0])
     
     for i in range(normalized_matrix.shape[0]):
         for j, criterion_type in enumerate(criterion_types):
             if criterion_type == "Benefit":
-                scores[i] += weights[j] * (normalized_matrix.iloc[i, j+1] - moora_scores[i])
+                scores[i] += weights[j] * (values[i, j] - moora_scores[i])
             else:  # Cost criterion
-                scores[i] += weights[j] * (moora_scores[i] - normalized_matrix.iloc[i, j+1])
+                scores[i] += weights[j] * (moora_scores[i] - values[i, j])
     
     return scores
 
@@ -1036,7 +1050,7 @@ def calculate_critic_weights(normalized_matrix):
     - Weights for each criterion
     """
     # Calculate standard deviation for each criterion
-    std_dev = normalized_matrix.iloc[:, 1:].std()
+    std_dev = as_weight_array(normalized_matrix.iloc[:, 1:].std())
     
     # Calculate correlation matrix
     correlation_matrix = normalized_matrix.iloc[:, 1:].corr()
@@ -1053,27 +1067,8 @@ def calculate_critic_weights(normalized_matrix):
     return weights
 
 def calculate_critic_moora_scores(normalized_matrix, weights, criterion_types):
-    """
-    Calculate MOORA scores for each alternative using CRITIC weights.
-    
-    Parameters:
-    - normalized_matrix: The normalized decision matrix
-    - weights: Weights for each criterion
-    - criterion_types: List of "Benefit" or "Cost" for each criterion
-    
-    Returns:
-    - MOORA scores for each alternative
-    """
-    scores = np.zeros(normalized_matrix.shape[0])
-    
-    for i in range(normalized_matrix.shape[0]):
-        for j, criterion_type in enumerate(criterion_types):
-            if criterion_type == "Benefit":
-                scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
-            else:  # Cost criterion
-                scores[i] -= weights[j] * normalized_matrix.iloc[i, j+1]
-    
-    return scores
+    """Calculate MOORA scores for each alternative using CRITIC weights."""
+    return calculate_moora_scores(normalized_matrix, weights, criterion_types)
 
 def calculate_3n_scores(moora_scores, normalized_matrix, weights, criterion_types):
     """
@@ -1088,14 +1083,16 @@ def calculate_3n_scores(moora_scores, normalized_matrix, weights, criterion_type
     Returns:
     - 3N scores for each alternative
     """
+    weights = as_weight_array(weights)
+    values = criteria_values(normalized_matrix)
     scores = np.zeros(normalized_matrix.shape[0])
     
     for i in range(normalized_matrix.shape[0]):
         for j, criterion_type in enumerate(criterion_types):
             if criterion_type == "Benefit":
-                scores[i] += weights[j] * (normalized_matrix.iloc[i, j+1] - moora_scores[i])
+                scores[i] += weights[j] * (values[i, j] - moora_scores[i])
             else:  # Cost criterion
-                scores[i] += weights[j] * (moora_scores[i] - normalized_matrix.iloc[i, j+1])
+                scores[i] += weights[j] * (moora_scores[i] - values[i, j])
     
     return scores
 
@@ -1110,7 +1107,7 @@ def calculate_critic_gra_3n_weights(normalized_matrix):
     - Weights for each criterion
     """
     # Calculate standard deviation for each criterion
-    std_dev = normalized_matrix.iloc[:, 1:].std()
+    std_dev = as_weight_array(normalized_matrix.iloc[:, 1:].std())
     
     # Calculate correlation matrix
     correlation_matrix = normalized_matrix.iloc[:, 1:].corr()
@@ -1138,13 +1135,17 @@ def calculate_grey_coefficient(normalized_matrix, weights, criterion_types):
     Returns:
     - Grey coefficients for each alternative
     """
+    weights = as_weight_array(weights)
+    values = criteria_values(normalized_matrix)
+    num_criteria = values.shape[1]
+
     # Define reference sequence (ideal solution)
-    reference_sequence = np.zeros(normalized_matrix.shape[1] - 1)
+    reference_sequence = np.zeros(num_criteria)
     for j, criterion_type in enumerate(criterion_types):
         if criterion_type == "Benefit":
-            reference_sequence[j] = normalized_matrix.iloc[:, j+1].max()
+            reference_sequence[j] = values[:, j].max()
         else:  # Cost criterion
-            reference_sequence[j] = normalized_matrix.iloc[:, j+1].min()
+            reference_sequence[j] = values[:, j].min()
     
     # Calculate grey coefficients
     grey_coefficients = np.zeros(normalized_matrix.shape[0])
@@ -1153,13 +1154,11 @@ def calculate_grey_coefficient(normalized_matrix, weights, criterion_types):
     for i in range(normalized_matrix.shape[0]):
         sum_coefficient = 0
         for j in range(len(criterion_types)):
-            # Calculate absolute difference
-            diff = abs(normalized_matrix.iloc[i, j+1] - reference_sequence[j])
-            # Calculate grey coefficient
-            min_diff = np.min(np.abs(normalized_matrix.iloc[:, j+1] - reference_sequence[j]))
-            max_diff = np.max(np.abs(normalized_matrix.iloc[:, j+1] - reference_sequence[j]))
+            diff = abs(values[i, j] - reference_sequence[j])
+            col_diff = np.abs(values[:, j] - reference_sequence[j])
+            min_diff = col_diff.min()
+            max_diff = col_diff.max()
             grey_coefficient = (min_diff + rho * max_diff) / (diff + rho * max_diff)
-            # Weight and sum
             sum_coefficient += weights[j] * grey_coefficient
         grey_coefficients[i] = sum_coefficient
     
@@ -1178,14 +1177,16 @@ def calculate_3n_grey_scores(grey_coefficients, normalized_matrix, weights, crit
     Returns:
     - 3N scores for each alternative
     """
+    weights = as_weight_array(weights)
+    values = criteria_values(normalized_matrix)
     scores = np.zeros(normalized_matrix.shape[0])
     
     for i in range(normalized_matrix.shape[0]):
         for j, criterion_type in enumerate(criterion_types):
             if criterion_type == "Benefit":
-                scores[i] += weights[j] * (normalized_matrix.iloc[i, j+1] - grey_coefficients[i])
+                scores[i] += weights[j] * (values[i, j] - grey_coefficients[i])
             else:  # Cost criterion
-                scores[i] += weights[j] * (grey_coefficients[i] - normalized_matrix.iloc[i, j+1])
+                scores[i] += weights[j] * (grey_coefficients[i] - values[i, j])
     
     return scores
 
@@ -1402,7 +1403,7 @@ def calculate_mpsi_waspas_weights(normalized_matrix):
     # Normalize weights
     weights = weights / weights.sum()
     
-    return weights
+    return as_weight_array(weights)
 
 def calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_value=0.5):
     """
@@ -1417,23 +1418,20 @@ def calculate_waspas_scores(normalized_matrix, weights, criterion_types, lambda_
     Returns:
     - WASPAS scores for each alternative
     """
+    weights = as_weight_array(weights)
+    values = criteria_values(normalized_matrix)
+
     # Calculate WSM scores
     wsm_scores = np.zeros(normalized_matrix.shape[0])
     for i in range(normalized_matrix.shape[0]):
         for j, criterion_type in enumerate(criterion_types):
-            if criterion_type == "Benefit":
-                wsm_scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
-            else:  # Cost criterion
-                wsm_scores[i] += weights[j] * normalized_matrix.iloc[i, j+1]
+            wsm_scores[i] += weights[j] * values[i, j]
     
     # Calculate WPM scores
     wpm_scores = np.ones(normalized_matrix.shape[0])
     for i in range(normalized_matrix.shape[0]):
         for j, criterion_type in enumerate(criterion_types):
-            if criterion_type == "Benefit":
-                wpm_scores[i] *= (normalized_matrix.iloc[i, j+1] ** weights[j])
-            else:  # Cost criterion
-                wpm_scores[i] *= (normalized_matrix.iloc[i, j+1] ** weights[j])
+            wpm_scores[i] *= values[i, j] ** weights[j]
     
     # Calculate WASPAS scores
     waspas_scores = lambda_value * wsm_scores + (1 - lambda_value) * wpm_scores
