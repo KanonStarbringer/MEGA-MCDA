@@ -1291,27 +1291,18 @@ def get_all_method_rankings(payoff_matrix, criterion_types):
 def create_comparison_graph(rankings):
     """
     Create a line graph comparing rankings across all methods.
-    
-    Parameters:
-    - rankings: Dictionary containing rankings for each method
-    
-    Returns:
-    - Plotly figure object
     """
-    # Create a DataFrame for plotting
     plot_data = []
     for method, ranking_df in rankings.items():
         for idx, row in ranking_df.iterrows():
             plot_data.append({
                 'Method': method,
                 'Alternative': row['Alternative'],
-                'Rank': idx + 1  # Convert to 1-based ranking
+                'Rank': idx + 1
             })
-    
+
     df_plot = pd.DataFrame(plot_data)
-    
-    # Sort alternatives in ascending order
-    # Coerce non-matching/blank alternatives to NaN to avoid astype errors.
+
     df_plot['Alternative_Num'] = (
         df_plot['Alternative']
         .astype(str)
@@ -1319,8 +1310,11 @@ def create_comparison_graph(rankings):
     )
     df_plot['Alternative_Num'] = pd.to_numeric(df_plot['Alternative_Num'], errors='coerce')
     df_plot = df_plot.sort_values(['Alternative_Num', 'Alternative'])
-    
-    # Create the line plot
+
+    # ponytail: colorblind-safe, grayscale-distinguishable palette (Wong 2011) —
+    # avoids CRITIC-MOORA-3N/CRITIC-GRA-3N collapsing to the same gray in print
+    palette = ['#000000', '#E69F00', '#56B4E9', '#009E73', '#D55E00', '#CC79A7', '#0072B2', '#F0E442']
+
     fig = px.line(
         df_plot,
         x='Alternative',
@@ -1328,10 +1322,10 @@ def create_comparison_graph(rankings):
         color='Method',
         title='Method Comparison: Rankings of Alternatives',
         labels={'Rank': 'Ranking Position', 'Alternative': 'Alternative'},
-        markers=True  # Add markers at each point
+        markers=True,
+        color_discrete_sequence=palette
     )
-    
-    # Update layout for better visualization
+
     categoryarray = (
         df_plot[['Alternative', 'Alternative_Num']]
         .drop_duplicates()
@@ -1345,17 +1339,23 @@ def create_comparison_graph(rankings):
             tickmode='linear',
             tick0=1,
             dtick=1,
-            autorange='reversed'  # Reverse y-axis so rank 1 is at the top
+            autorange='reversed'
         ),
         xaxis=dict(
             title='Alternative',
-            categoryorder='array',  # Use custom ordering
+            categoryorder='array',
             categoryarray=categoryarray
         ),
         showlegend=True,
-        legend_title='Method'
+        legend_title='Method',
+        # ponytail: fixed export size + right margin so the legend never clips;
+        # bump width further if you add a 7th/8th method to the comparison
+        width=950,
+        height=520,
+        margin=dict(l=60, r=200, t=60, b=60),
+        legend=dict(x=1.02, xanchor='left', y=1, yanchor='top', font=dict(size=11))
     )
-    
+
     return fig
 
 def mpsi_waspas_normalize(matrix, criterion_types):
