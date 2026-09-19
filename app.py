@@ -189,7 +189,7 @@ def normalize_matrix_with_vector(df, criterion_types):
         if criterion_type == "Benefit":
             normalized.iloc[:, j+1] = df.iloc[:, j+1] / np.sqrt(sum(df.iloc[:, j+1] ** 2))
         else:
-            normalized.iloc[:, j+1] = 1 - df.iloc[:, j+1] / np.sqrt(sum((1 - df.iloc[:, j+1]) ** 2))
+            normalized.iloc[:, j+1] = 1 - df.iloc[:, j+1] / np.sqrt(sum((df.iloc[:, j+1]) ** 2))
     return normalized
 
 
