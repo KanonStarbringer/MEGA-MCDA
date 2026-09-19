@@ -308,7 +308,7 @@ def provan_ranking(df_agg, criterion_types):
         U_minus = theta[:, cost_idx].sum(axis=1)
     else:
         U_minus = np.zeros(theta.shape[0])
-    Score = (2.0 + U_plus) / (2.0 + U_minus)
+    Score = (2.0 + U_plus)**(1/(2.0 + U_minus))
     result = pd.DataFrame({
         "A/C": weighted_df["A/C"],
         "U_plus": U_plus,
